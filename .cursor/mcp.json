@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "E2E": {
+      "command": "node",
+      "args": ["c:/Github/E2E/dist/index.js"]
+    }
+  }
+}

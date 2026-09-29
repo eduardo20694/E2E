@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "E2E": {
+      "command": "node",
+      "args": ["CAMINHO_ABSOLUTO/dist/index.js"]
+    }
+  }
+}
