@@ -5,7 +5,8 @@ import { doc, markdownTable } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { deliver, resolveToolRoot, slug, type LoopFlags } from "./loop.js";
 
 export interface TestPlanInput extends ProjectContextInput {
   feature: string;
@@ -156,7 +157,7 @@ export function registerTestPlanTools(server: McpServer): void {
     server,
     "generate_test_plan",
     "Gerar plano de teste",
-    "Gera um plano com escopo, riscos, camadas, cronograma e critérios de entrada e saída.",
+    "Plano grava e não executa `docs/qa/*.md` com escopo, riscos, camadas, cronograma e critérios de entrada e saída.",
     {
       feature: z.string(),
       scope: z.string().optional(),
@@ -165,30 +166,61 @@ export function registerTestPlanTools(server: McpServer): void {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => generateTestPlan(args as unknown as TestPlanInput),
+    async (args) => {
+      const input = args as unknown as TestPlanInput & LoopFlags;
+      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+      const ready = { ...input, projectRoot: root ?? input.projectRoot };
+      const result = generateTestPlan(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: `docs/qa/plano-${slug(ready.feature)}.md`,
+        contents: result.content[0]?.text ?? "",
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "generate_bug_report",
     "Gerar relato de defeito",
-    "Transforma uma descrição informal em relato com passos, esperado, atual, severidade e prioridade.",
+    "Defeito grava e não executa `docs/qa/defeito-*.md` com passos, esperado, atual, severidade e prioridade.",
     {
       description: z.string(),
       environment: z.string().optional(),
       severity: z.enum(["blocker", "critical", "major", "minor", "trivial"]).optional(),
       sourceCode: z.string().optional(),
       filePath: z.string().optional(),
+      projectRoot: z.string().optional(),
+      ...writeShape,
     },
-    (args) => generateBugReport(args as unknown as BugReportInput),
+    async (args) => {
+      const input = args as unknown as BugReportInput & LoopFlags;
+      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+      const ready = { ...input, projectRoot: root ?? input.projectRoot };
+      const result = generateBugReport(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: `docs/qa/defeito-${slug(ready.description)}.md`,
+        contents: result.content[0]?.text ?? "",
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "generate_traceability_matrix",
     "Matriz de rastreabilidade",
-    "Cruza requisitos com casos de teste e aponta requisito sem cobertura.",
+    "Rastreio grava e não executa `docs/qa/rastreabilidade.md` cruzando requisitos e casos, e aponta requisito sem cobertura.",
     {
       requirements: z.array(z.object({ id: z.string(), description: z.string() })).min(1),
       testCases: z
@@ -201,7 +233,23 @@ export function registerTestPlanTools(server: McpServer): void {
         )
         .optional(),
       sourceCode: z.string().optional(),
+      projectRoot: z.string().optional(),
+      ...writeShape,
     },
-    (args) => generateTraceabilityMatrix(args as unknown as TraceabilityInput),
+    async (args) => {
+      const input = args as unknown as TraceabilityInput & LoopFlags;
+      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+      const ready = { ...input, projectRoot: root ?? input.projectRoot };
+      const result = generateTraceabilityMatrix(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "docs/qa/rastreabilidade.md",
+        contents: result.content[0]?.text ?? "",
+      });
+    },
+    { readOnly: false },
   );
 }

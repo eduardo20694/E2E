@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { detectStack, inferLanguage, stackSummary, type Language } from "../lib/detect.js";
@@ -5,7 +7,10 @@ import { codeBlock, doc } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { runShape, writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { runClosed } from "../lib/runner.js";
+import { resolveInside } from "../lib/workspace.js";
+import { deliver, resolveToolRoot, resultText, type LoopFlags } from "./loop.js";
 
 export interface MutationReportInput extends ProjectContextInput {
   language?: string;
@@ -90,19 +95,149 @@ runner = "python -m pytest -x"`,
   };
 }
 
+function mutationConfigPath(name: string): string {
+  if (name === "PIT") return "pitest-config.xml";
+  if (name === "mutmut") return "mutmut.toml";
+  return "stryker.config.json";
+}
+
+function readTextIfSmall(projectRoot: string, relative: string): string | undefined {
+  try {
+    const absolute = resolveInside(projectRoot, relative);
+    if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) return undefined;
+    if (fs.statSync(absolute).size > 500_000) return undefined;
+    return fs.readFileSync(absolute, "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
+function findMutationReport(projectRoot: string): { path: string; text: string } | undefined {
+  const named = [
+    "reports/mutation/mutation.json",
+    "reports/mutation/mutation-report.json",
+    "mutation.json",
+    "target/pit-reports/mutations.xml",
+    "mutants/mutmut-results.json",
+  ];
+  for (const relative of named) {
+    const text = readTextIfSmall(projectRoot, relative);
+    if (text) return { path: relative, text };
+  }
+
+  const skip = new Set(["node_modules", ".git", "dist", "coverage", "vendor", "venv", ".venv"]);
+  const root = path.resolve(projectRoot);
+  const stack = [root];
+  let seen = 0;
+  while (stack.length && seen < 800) {
+    seen += 1;
+    const current = stack.pop() as string;
+    if (path.relative(root, current).split(path.sep).filter(Boolean).length > 5) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (skip.has(entry.name) || entry.name.startsWith(".")) continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) stack.push(full);
+      if (!entry.isFile()) continue;
+      if (!["mutation.json", "mutations.xml", "mutmut-results.json"].includes(entry.name)) continue;
+      const relative = path.relative(root, full).split(path.sep).join("/");
+      const text = readTextIfSmall(projectRoot, relative);
+      if (text) return { path: relative, text };
+    }
+  }
+  return undefined;
+}
+
+function interpretMutation(text: string): { score?: number; summary: string } {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+    const data = JSON.parse(trimmed) as {
+      files?: Record<string, { mutants?: Array<{ status?: string }> }>;
+      mutants?: Array<{ status?: string }>;
+    };
+    const mutants = data.mutants ?? Object.values(data.files ?? {}).flatMap((file) => file.mutants ?? []);
+    if (!mutants.length) return { summary: "O JSON não trouxe mutantes reconhecíveis." };
+    const killed = mutants.filter((item) => /killed|timeout/i.test(item.status ?? "")).length;
+    const survived = mutants.filter((item) => /survived|no coverage|not covered/i.test(item.status ?? "")).length;
+    const score = Math.round((killed / mutants.length) * 100);
+    return { score, summary: `${killed} mortos, ${survived} sobreviventes, ${mutants.length} mutantes.` };
+  }
+  const detected = [...trimmed.matchAll(/detected=['"]true['"]/gi)].length;
+  const missed = [...trimmed.matchAll(/detected=['"]false['"]/gi)].length;
+  if (detected + missed > 0) {
+    const score = Math.round((detected / (detected + missed)) * 100);
+    return { score, summary: `${detected} mortos e ${missed} sobreviventes no PIT.` };
+  }
+  return { summary: "Achei um arquivo de mutação, mas o formato não é o JSON do Stryker nem o XML do PIT." };
+}
+
+export async function handleMutationTestingReport(input: MutationReportInput & LoopFlags, server?: McpServer): Promise<ToolTextResult> {
+  const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+  const ready = { ...input, projectRoot: root ?? input.projectRoot };
+  const found = ready.projectRoot ? findMutationReport(ready.projectRoot) : undefined;
+  let score = ready.currentScore;
+  let lead = "";
+  if (found) {
+    try {
+      const interpreted = interpretMutation(found.text);
+      if (score === undefined && interpreted.score !== undefined) score = interpreted.score;
+      lead = `Li \`${found.path}\`. ${interpreted.summary}`;
+    } catch {
+      lead = `Li \`${found.path}\`, mas não consegui interpretar o conteúdo.`;
+    }
+  }
+  const result = mutationTestingReport({ ...ready, currentScore: score });
+  const text = [lead, result.content[0]?.text ?? ""].filter(Boolean).join("\n\n");
+  if (result.isError) return textResult(text);
+  const stack = detectStack(ready.projectRoot);
+  const language = (ready.language as Language | undefined) ?? inferLanguage(ready.sourceCode, ready.filePath);
+  const engine = pickEngine(stack, language);
+  const hasStryker = Boolean(
+    ready.projectRoot && fs.existsSync(path.join(ready.projectRoot, "node_modules", "@stryker-mutator", "core", "package.json")),
+  );
+  const delivered = found
+    ? textResult(text)
+    : await deliver({
+        server,
+        input: ready,
+        preface: textResult(text),
+        relativePath: mutationConfigPath(engine.name),
+        contents: engine.config,
+        skipIfExists: true,
+      });
+  if (delivered.isError) return delivered;
+  if (ready.run === false || !hasStryker || !ready.projectRoot) {
+    const why =
+      ready.run === false
+        ? "Não foi executado."
+        : "Não foi executado. @stryker-mutator/core não está em node_modules.";
+    return textResult([resultText(delivered), why].join("\n\n"));
+  }
+  const scan = await runClosed(ready.projectRoot, "stryker", ready.filePath);
+  return textResult([resultText(delivered), scan].join("\n\n"));
+}
+
 export function registerMutationTools(server: McpServer): void {
   registerTool(
     server,
     "mutation_testing_report",
     "Relatório de mutation testing",
-    "Explica como configurar Stryker, PIT ou mutmut conforme a stack do projeto e como interpretar o mutation score.",
+    "Mutação lê relatório do disco e executa o Stryker local quando `@stryker-mutator/core` está em node_modules; sem o pacote, grava o config e não executa.",
     {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
       language: z.string().optional(),
       currentScore: z.number().min(0).max(100).optional().describe("Score atual, se já houver uma execução."),
+      ...writeShape,
+      ...runShape,
     },
-    (args) => mutationTestingReport(args as unknown as MutationReportInput),
+    (args) => handleMutationTestingReport(args as unknown as MutationReportInput & LoopFlags, server),
+    { readOnly: false },
   );
 }

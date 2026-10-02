@@ -14,7 +14,9 @@ import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
 import { extractImports, extractSymbols, moduleNameFromPath } from "../lib/symbols.js";
 import { cursorRoots, readProjectFile, resolveProjectRoot } from "../lib/workspace.js";
+import { runShape, writeShape } from "../lib/schema.js";
 import { persistGenerated } from "./execution.js";
+import { shouldRun, shouldWrite } from "./loop.js";
 import type { TestRunner } from "../lib/runner.js";
 
 const frameworkEnum = z.enum(["jest", "vitest", "pytest", "junit", "rspec"]);
@@ -51,6 +53,7 @@ export function buildUnitTest(input: GenerateUnitTestInput): BuiltUnitTest {
     moduleName,
     filePath: input.filePath,
     externalImports: imports.filter((item) => !item.local).map((item) => item.source),
+    sourceCode: input.sourceCode,
   });
 
   const mockNote =
@@ -81,8 +84,10 @@ export function buildUnitTest(input: GenerateUnitTestInput): BuiltUnitTest {
       mockNote,
       "## Código",
       codeBlock(rendered.language, rendered.code),
-      "## Casos que o esqueleto ainda não fecha",
-      "- Substitua `toBeDefined` / `assert result is not None` pelo valor de negócio.",
+      "## O que o teste verde significa",
+      rendered.code.includes("@testing-library/react")
+        ? "O teste renderiza o componente e afirma os controles extraídos do arquivo."
+        : "- O teste verde ou confere o valor derivado do return puro, ou ainda não teve o contrato preenchido.",
       "- Acrescente partições de equivalência e limites se a função tiver números ou datas.",
       "- Um teste unitário não sobe banco, rede nem browser.",
       citeKnowledge(["unit-testing", "tdd", "black-white-gray-box"]),
@@ -103,32 +108,37 @@ export function registerUnitTools(server: McpServer): void {
     server,
     "generate_unit_test",
     "Gerar teste unitário",
-    "Gera um teste unitário (Jest, Vitest, pytest, JUnit ou RSpec) a partir do código-fonte, com mocks quando há dependência externa. Detecta o framework do projeto antes de sugerir um.",
+    "Unitário grava e executa no runner local o teste (`*.test.ts`, `test_*.py`, `*Test.java`, `*_spec.rb` ou `*_test.go`): o verde confere o valor derivado do return puro, ou falha até o contrato estar preenchido.",
     {
       sourceCode: z.string().optional().describe("Código da função ou classe. Se vazio, lê filePath do disco."),
       framework: frameworkEnum.optional().describe("Framework pedido. Se omitido, usa o que estiver no projeto."),
       projectRoot: z.string().optional().describe("Raiz do projeto aberto no Cursor."),
       filePath: z.string().optional().describe("Caminho do arquivo de produção."),
       language: z.string().optional().describe("Dica de linguagem, se o arquivo ainda não tem extensão."),
-      writeToProject: z.boolean().optional().describe("Grava o arquivo de teste ao lado do fonte."),
-      run: z.boolean().optional().describe("Executa o teste gerado quando o runner é Vitest, Jest ou pytest."),
+      ...writeShape,
+      ...runShape,
     },
     async (args) => {
-      const input = args as unknown as GenerateUnitTestInput & { writeToProject?: boolean; run?: boolean };
+      const input = args as unknown as GenerateUnitTestInput & { writeToProject?: boolean; run?: boolean; overwrite?: boolean };
       const hydrated = await hydrate(server, input);
       if ("isError" in hydrated && hydrated.isError) return hydrated;
       const ready = hydrated as GenerateUnitTestInput;
       const built = buildUnitTest(ready);
-      if (built.result.isError || (!input.writeToProject && !input.run) || !built.code || !built.fileName) return built.result;
+      if (built.result.isError || !built.code || !built.fileName) return built.result;
+      const runner = unitRunner(built.framework);
+      const write = shouldWrite(input.writeToProject, ready.projectRoot);
+      const run = shouldRun(input.run, Boolean(runner), ready.projectRoot);
+      if (!write && !run) return built.result;
       return persistGenerated({
         projectRoot: ready.projectRoot,
         filePath: ready.filePath,
         fileName: built.fileName,
         code: built.code,
-        runner: unitRunner(built.framework),
-        write: input.writeToProject,
-        run: input.run,
-        preface: built.result.content[0]?.text ?? "",
+        runner,
+        write,
+        run,
+        overwrite: input.overwrite,
+        preface: [built.result.content[0]?.text ?? "", run ? undefined : "Não foi executado."].filter(Boolean).join("\n\n"),
       });
     },
     { readOnly: false },

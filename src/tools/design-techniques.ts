@@ -242,7 +242,7 @@ export function registerDesignTools(server: McpServer): void {
     server,
     "boundary_value_analysis",
     "Análise de valor limite",
-    "Gera casos de teste nas bordas de uma regra numérica (abaixo, no limite, acima e o valor nominal).",
+    "Limite calcula e não grava os casos nas bordas de uma regra numérica (abaixo, no limite, acima e o valor nominal).",
     {
       rule: z.string().describe("Regra de negócio, por exemplo 'idade entre 18 e 65'."),
       min: z.number().optional(),
@@ -257,7 +257,7 @@ export function registerDesignTools(server: McpServer): void {
     server,
     "equivalence_partitioning",
     "Particionamento de equivalência",
-    "Divide um domínio de entrada em classes válidas e inválidas e devolve um representante de cada classe.",
+    "Equivalência calcula e não grava um representante de cada classe válida e inválida do domínio.",
     {
       domain: z.string().describe("Descrição do domínio de entrada."),
       classes: z
@@ -278,7 +278,7 @@ export function registerDesignTools(server: McpServer): void {
     server,
     "decision_table",
     "Tabela de decisão",
-    "Monta a tabela de decisão a partir de condições e, se informadas, as ações de cada regra.",
+    "Decisão calcula e não grava a tabela a partir das condições e das ações de cada regra.",
     {
       conditions: z.array(conditionSchema).min(1),
       actions: z.array(z.string()).optional(),
@@ -299,7 +299,7 @@ export function registerDesignTools(server: McpServer): void {
     server,
     "state_transition_test",
     "Teste de transição de estado",
-    "Gera casos de transição válida e inválida a partir de uma máquina de estados ou de um diagrama textual.",
+    "Estados calcula e não grava as transições válidas e inválidas de uma máquina de estados.",
     {
       states: z.array(z.string()).optional(),
       transitions: z
@@ -322,7 +322,7 @@ export function registerDesignTools(server: McpServer): void {
     server,
     "pairwise_test_generator",
     "Gerador pairwise",
-    "Gera um conjunto reduzido de combinações em que cada par de valores aparece ao menos uma vez.",
+    "Pairwise calcula e não grava o conjunto em que cada par de valores aparece ao menos uma vez.",
     {
       parameters: z
         .array(

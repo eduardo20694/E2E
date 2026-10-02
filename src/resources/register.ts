@@ -1,4 +1,5 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { layerMatrixMarkdown } from "../lib/edit-map.js";
 import { listKnowledge, readKnowledge } from "../lib/knowledge.js";
 
 /** Publica cada markdown como resource `e2e://knowledge/<slug>`. */
@@ -24,4 +25,23 @@ export function registerKnowledgeResources(server: McpServer): void {
       }),
     );
   }
+
+  server.registerResource(
+    "map",
+    "e2e://map",
+    {
+      title: "Mapa de tools por arquivo editado",
+      description: "Matriz de camadas gerada pelo mapa: qual tool chamar conforme o arquivo editado.",
+      mimeType: "text/markdown",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "text/markdown",
+          text: layerMatrixMarkdown(),
+        },
+      ],
+    }),
+  );
 }

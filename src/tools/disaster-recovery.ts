@@ -5,7 +5,8 @@ import { doc, markdownTable } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { deliver, resolveToolRoot, type LoopFlags } from "./loop.js";
 
 export interface DisasterInput extends ProjectContextInput {
   system?: string;
@@ -111,7 +112,7 @@ export function registerDisasterTools(server: McpServer): void {
     server,
     "setup_disaster_recovery_test",
     "Teste de disaster recovery",
-    "Desenha um ensaio de restore com RPO e RTO, numa cópia, sem apontar o ensaio para o tráfego de cliente.",
+    "Restore grava e não executa `docs/qa/disaster-recovery.md` com RPO e RTO numa cópia, sem apontar o ensaio para o tráfego de cliente.",
     {
       system: z.string().optional(),
       rpoMinutes: z.number().positive().optional(),
@@ -119,22 +120,56 @@ export function registerDisasterTools(server: McpServer): void {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => setupDisasterRecoveryTest(args as unknown as DisasterInput),
+    async (args) => {
+      const input = args as unknown as DisasterInput & LoopFlags;
+      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+      const ready = { ...input, projectRoot: root ?? input.projectRoot };
+      const result = setupDisasterRecoveryTest(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "docs/qa/disaster-recovery.md",
+        contents: result.content[0]?.text ?? "",
+        neverRun: true,
+        skippedNote: "Não foi executado.",
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "suggest_compliance_checklist",
     "Checklist de compliance",
-    "Monta checagens de LGPD, GDPR, PCI-DSS ou HIPAA aplicadas ao uso de dado no teste.",
+    "Compliance grava e não executa `docs/qa/compliance.md` com checagens de LGPD, GDPR, PCI-DSS ou HIPAA no uso de dado de teste.",
     {
       context: z.string().optional(),
       frameworks: z.array(z.enum(["LGPD", "GDPR", "PCI-DSS", "HIPAA"])).optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => suggestComplianceChecklist(args as unknown as ComplianceInput),
+    async (args) => {
+      const input = args as unknown as ComplianceInput & LoopFlags;
+      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+      const ready = { ...input, projectRoot: root ?? input.projectRoot };
+      const result = suggestComplianceChecklist(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "docs/qa/compliance.md",
+        contents: result.content[0]?.text ?? "",
+        neverRun: true,
+        skippedNote: "Não foi executado.",
+      });
+    },
+    { readOnly: false },
   );
 }

@@ -6,6 +6,8 @@ import { parseAllureResult, parseJunit } from "../src/lib/report.js";
 import { buildRunnerCommand } from "../src/lib/runner.js";
 import { findProjectRoot, resolveInside, writeProjectFile } from "../src/lib/workspace.js";
 import { diagnoseTestReport } from "../src/tools/execution.js";
+import { handleGenerateIntegrationTest } from "../src/tools/integration.js";
+import { handleCodeCoverageAdvisor } from "../src/tools/metrics.js";
 import { buildUnitTest } from "../src/tools/unit.js";
 
 describe("ciclo fechado", () => {
@@ -19,6 +21,39 @@ describe("ciclo fechado", () => {
     const destination = writeProjectFile(root, path.join("src", "add.test.ts"), "test('ok', () => {})");
     expect(fs.readFileSync(destination, "utf8")).toContain("test(");
     expect(() => writeProjectFile(root, path.join("src", "add.test.ts"), "outro")).toThrow(/já existe/);
+  });
+
+  it("recusa manifesto e json solto", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-deny-"));
+    expect(() => writeProjectFile(root, "package.json", "{}", true)).toThrow(/Recuso gravar/);
+    expect(() => writeProjectFile(root, "pom.xml", "<project/>", true)).toThrow(/Recuso gravar/);
+    expect(() => writeProjectFile(root, "data.json", "{}")).toThrow(/lista permitida/);
+    const fixture = writeProjectFile(root, "tests/fixtures/user.json", "{}");
+    expect(fs.existsSync(fixture)).toBe(true);
+  });
+
+  it("grava integração sem flag quando a raiz existe", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-int-"));
+    const result = await handleGenerateIntegrationTest({
+      description: "pedido grava estoque",
+      projectRoot: root,
+    });
+    const destination = path.join(root, "integration.test.ts");
+    expect(fs.existsSync(destination)).toBe(true);
+    expect(fs.readFileSync(destination, "utf8")).toContain("integração");
+    expect(result.content[0]?.text).toContain("Gravado");
+  });
+
+  it("lê lcov.info da raiz sem o argumento report", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-lcov-"));
+    fs.mkdirSync(path.join(root, "coverage"));
+    fs.writeFileSync(
+      path.join(root, "coverage", "lcov.info"),
+      "SF:src/payment.ts\nDA:10,0\nDA:11,1\nend_of_record\n",
+    );
+    const result = await handleCodeCoverageAdvisor({ projectRoot: root });
+    expect(result.isError).toBeUndefined();
+    expect(result.content[0]?.text).toContain("payment.ts");
   });
 
   it("acha a raiz subindo até o package.json", () => {

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
@@ -13,6 +14,7 @@ import { scanPyramid } from "../lib/pyramid.js";
 import {
   cursorRoots,
   readProjectFile,
+  resolveInside,
   resolveProjectRoot,
   writeProjectFile,
 } from "../lib/workspace.js";
@@ -117,9 +119,12 @@ export async function persistGenerated(input: {
   fileName: string;
   code: string;
   folder?: string;
+  relativePath?: string;
   runner?: TestRunner;
   write?: boolean;
   run?: boolean;
+  overwrite?: boolean;
+  skipIfExists?: boolean;
   preface: string;
 }): Promise<ToolTextResult> {
   const parts = [input.preface];
@@ -127,30 +132,43 @@ export async function persistGenerated(input: {
 
   if (input.write) {
     if (!input.projectRoot) return errorResult("writeToProject precisa da raiz. Passe projectRoot ou abra a pasta no Cursor.");
-    const relative = input.folder
-      ? path.join(input.folder, input.fileName)
-      : beside(input.projectRoot, input.filePath, input.fileName);
+    const relative = input.relativePath
+      ? input.relativePath
+      : input.folder
+        ? path.join(input.folder, input.fileName)
+        : beside(input.projectRoot, input.filePath, input.fileName);
     try {
-      written = writeProjectFile(input.projectRoot, relative, input.code);
-      parts.push(`## Gravado\n\`${written}\``);
+      const destination = resolveInside(input.projectRoot, relative);
+      if (fs.existsSync(destination) && !input.overwrite && input.skipIfExists) {
+        parts.push(`## Gravado\nArquivo já existe, não substituí: \`${destination}\``);
+        written = destination;
+      } else {
+        written = writeProjectFile(input.projectRoot, relative, input.code, input.overwrite);
+        parts.push(`## Gravado\n\`${written}\``);
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return errorResult(message);
+      return errorResult([input.preface, message].filter(Boolean).join("\n\n"));
     }
   }
 
   if (input.run) {
     if (!input.projectRoot) return errorResult("run precisa da raiz do projeto.");
     if (!input.runner) {
-      parts.push("## Execução\nEste framework não entra na execução automática. Cobertos: Vitest, Jest, pytest e Playwright.");
+      parts.push("## Execução\nEste framework não entra na execução automática. Cobertos: Vitest, Jest, pytest e Playwright. Não foi executado.");
     } else {
       const ran = await runProjectTests({
         projectRoot: input.projectRoot,
         runner: input.runner,
         testPath: written,
       });
-      parts.push(ran.content[0]?.text ?? "");
-      if (ran.isError) return errorResult(parts.filter(Boolean).join("\n\n"));
+      const body = ran.content[0]?.text ?? "";
+      if (ran.isError && /não está instalado|ENOENT/.test(body)) {
+        parts.push(`${body}\n\nO arquivo foi gravado. A execução não rodou porque o runner não está instalado.`);
+      } else {
+        parts.push(body);
+        if (ran.isError) return errorResult(parts.filter(Boolean).join("\n\n"));
+      }
     }
   }
 
@@ -209,7 +227,7 @@ export function registerExecutionTools(server: McpServer): void {
     server,
     "read_workspace",
     "Ler workspace",
-    "Descobre a raiz pelo Cursor, por E2E_PROJECT_ROOT ou pelo arquivo, e lê o código do disco quando filePath vem sem o conteúdo.",
+    "Leitura lê arquivo do disco a partir da raiz do Cursor, de E2E_PROJECT_ROOT ou subindo de filePath, e não grava.",
     {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
@@ -221,7 +239,7 @@ export function registerExecutionTools(server: McpServer): void {
     server,
     "write_test_file",
     "Gravar arquivo de teste",
-    "Grava um arquivo de teste dentro da raiz do projeto. Recusa caminho fora da raiz e não sobrescreve sem overwrite.",
+    "Escrita grava e não executa o arquivo de teste pedido dentro da raiz; recusa `package.json`, `pom.xml`, `.env`, `..`, `node_modules` e `.git`.",
     {
       projectRoot: z.string(),
       relativePath: z.string(),
@@ -236,7 +254,7 @@ export function registerExecutionTools(server: McpServer): void {
     server,
     "run_project_tests",
     "Executar testes",
-    "Roda Vitest, Jest, Playwright ou pytest já instalados no projeto e devolve pass ou fail. Não aceita comando livre.",
+    "Execução roda no runner local Vitest, Jest, Playwright ou pytest já instalados, sem comando livre e sem gravar arquivo novo.",
     {
       projectRoot: z.string(),
       runner: z.enum(["vitest", "jest", "playwright", "pytest"]),
@@ -250,7 +268,7 @@ export function registerExecutionTools(server: McpServer): void {
     server,
     "diagnose_test_report",
     "Diagnosticar relatório",
-    "Lê JUnit XML ou resultado Allure do disco, ou o XML colado, e aponta as falhas reais.",
+    "Diagnóstico lê arquivo do disco (JUnit XML ou Allure) e aponta as falhas reais, sem gravar.",
     {
       report: z.string().optional().describe("XML JUnit ou JSON Allure."),
       reportPath: z.string().optional().describe("Arquivo ou pasta do relatório, dentro do projeto se projectRoot vier."),

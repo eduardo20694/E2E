@@ -90,14 +90,19 @@ describe("generate_integration_test", () => {
 });
 
 describe("generate_e2e_test", () => {
-  it("gera Playwright com os passos do fluxo", () => {
-    const body = text(
-      generateE2eTest({
-        userFlow: "Abrir a home. Entrar com o usuário. Ver o painel.",
-      }),
-    );
-    expect(body).toContain("playwright");
-    expect(body).toContain("Ver o painel");
+  it("mantém o erro sem controle e sem fluxo", () => {
+    const result = generateE2eTest({});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Sem controle e sem fluxo");
+  });
+
+  it("pede o arquivo da tela quando só há userFlow", () => {
+    const result = generateE2eTest({
+      userFlow: "Abrir a home. Entrar com o usuário. Ver o painel.",
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text.toLowerCase()).toContain("arquivo da tela");
+    expect(result.content[0].text).not.toContain("toHaveURL");
   });
 });
 

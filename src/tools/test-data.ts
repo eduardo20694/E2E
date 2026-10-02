@@ -5,7 +5,8 @@ import { codeBlock, doc, markdownTable } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { deliver, resolveToolRoot, slug, type LoopFlags } from "./loop.js";
 
 const NAMES = ["Ana", "Bruno", "Carla", "Diego", "Elena", "Fabio"];
 const SURNAMES = ["Silva", "Souza", "Costa", "Lima", "Rocha", "Nunes"];
@@ -204,12 +205,27 @@ export function setupServiceVirtualization(input: VirtualizationInput): ToolText
   );
 }
 
+function syntheticFields(input: SyntheticDataInput): SyntheticField[] {
+  return input.fields?.length
+    ? input.fields
+    : [
+        { name: "id", type: "uuid" },
+        { name: "name", type: "name" },
+        { name: "email", type: "email" },
+      ];
+}
+
+async function rooted<T extends LoopFlags>(server: McpServer, input: T): Promise<T> {
+  const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+  return { ...input, projectRoot: root ?? input.projectRoot };
+}
+
 export function registerTestDataTools(server: McpServer): void {
   registerTool(
     server,
     "generate_synthetic_data",
     "Gerar dado sintético",
-    "Gera linhas falsas e reproduzíveis para uma entidade, no formato do Faker, sem copiar produção.",
+    "Fábrica grava e não executa `tests/fixtures/*.json` com linhas falsas e reproduzíveis, sem copiar produção.",
     {
       entity: z.string(),
       fields: z.array(z.object({ name: z.string(), type: z.string().optional() })).optional(),
@@ -218,15 +234,31 @@ export function registerTestDataTools(server: McpServer): void {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => generateSyntheticData(args as unknown as SyntheticDataInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as SyntheticDataInput & LoopFlags);
+      const result = generateSyntheticData(ready);
+      if (result.isError) return result;
+      const count = Math.min(Math.max(ready.count ?? 3, 1), 20);
+      const rows = synthesizeRows(syntheticFields(ready), count, ready.seed ?? 1);
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: `tests/fixtures/${slug(ready.entity)}.json`,
+        contents: JSON.stringify(rows, null, 2),
+        neverRun: true,
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "suggest_data_masking_strategy",
     "Estratégia de mascaramento",
-    "Classifica campos para anonimização antes de qualquer uso de dado real em teste, no espírito de LGPD e GDPR.",
+    "Máscara grava e não executa `docs/qa/mascaramento.md` classificando campos antes de qualquer uso de dado real.",
     {
       fields: z.array(z.string()).optional(),
       sample: z.string().optional(),
@@ -234,35 +266,86 @@ export function registerTestDataTools(server: McpServer): void {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => suggestDataMaskingStrategy(args as unknown as MaskingInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as MaskingInput & LoopFlags);
+      const result = suggestDataMaskingStrategy(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "docs/qa/mascaramento.md",
+        contents: result.content[0]?.text ?? "",
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "suggest_seeding_strategy",
     "Estratégia de seed",
-    "Sugere factories e fixtures reproduzíveis para o banco de teste, conforme a linguagem do projeto.",
+    "Seed grava e não executa o teste de seed (`tests/seed/*.test.ts` ou `test_*.py`) com factories reproduzíveis.",
     {
       entities: z.array(z.string()).optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => suggestSeedingStrategy(args as unknown as SeedingInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as SeedingInput & LoopFlags);
+      const result = suggestSeedingStrategy(ready);
+      if (result.isError) return result;
+      const entities = ready.entities?.filter(Boolean) ?? ["usuário", "pedido"];
+      const language = inferLanguage(ready.sourceCode, ready.filePath);
+      const python = language === "python";
+      const contents = python
+        ? `def test_seed_ordem():\n    ordem = ${JSON.stringify(entities)}\n    assert ordem\n`
+        : `import { describe, it, expect } from "vitest";\n\nconst ordem = ${JSON.stringify(entities)};\n\ndescribe("seed", () => {\n  it("cria as entidades na ordem combinada", () => {\n    expect(ordem.length).toBeGreaterThan(0);\n  });\n});\n`;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: python ? "tests/seed/test_seed.py" : "tests/seed/seed.test.ts",
+        contents,
+        neverRun: true,
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "setup_service_virtualization",
     "Virtualizar serviço",
-    "Sugere WireMock ou Hoverfly para um serviço externo, e separa isso do banco do próprio sistema.",
+    "Dublê grava e não executa `wiremock/mappings/*.json` para serviço externo, separado do banco do próprio sistema.",
     {
       dependency: z.string().describe("Nome do serviço externo."),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => setupServiceVirtualization(args as unknown as VirtualizationInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as VirtualizationInput & LoopFlags);
+      const result = setupServiceVirtualization(ready);
+      if (result.isError) return result;
+      const mapping = {
+        request: { method: "POST", urlPath: `/${ready.dependency}` },
+        response: { status: 200, jsonBody: { id: "fake-1", status: "accepted" } },
+      };
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: `wiremock/mappings/${slug(ready.dependency)}.json`,
+        contents: JSON.stringify(mapping, null, 2),
+        neverRun: true,
+      });
+    },
+    { readOnly: false },
   );
 }

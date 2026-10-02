@@ -1,6 +1,6 @@
 {
   "name": "e2e-mcp",
-  "version": "3.0.0",
+  "version": "3.7.0",
   "description": "Servidor MCP especialista em testes de software full-stack para o Cursor",
   "type": "module",
   "bin": {

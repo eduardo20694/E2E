@@ -6,7 +6,10 @@ import { codeBlock, doc } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { runShape, writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { extractRoutes } from "../lib/web.js";
+import { deliver, hydrateSource, type LoopFlags } from "./loop.js";
+import type { TestRunner } from "../lib/runner.js";
 
 export interface GenerateApiTestInput extends ProjectContextInput {
   specification: string;
@@ -21,28 +24,50 @@ export function detectProtocol(specification: string, source?: string): "rest" |
   return "rest";
 }
 
+function apiRender(input: GenerateApiTestInput) {
+  const protocol = input.protocol ?? detectProtocol(input.specification, input.sourceCode);
+  const language = inferLanguage(input.sourceCode, input.filePath);
+  const source = [input.sourceCode, input.specification].filter((part) => part?.trim()).join("\n");
+  const routes = protocol === "rest" ? extractRoutes(source, input.filePath) : [];
+  const rendered = renderApiTest({
+    protocol,
+    specification: input.specification,
+    baseUrl: input.baseUrl ?? (protocol === "graphql" ? "http://127.0.0.1:4000/graphql" : "http://127.0.0.1:3000"),
+    language: language === "python" ? "python" : "ts",
+    sourceCode: source,
+    filePath: input.filePath,
+  });
+  return { protocol, language, routes, rendered };
+}
+
 export function generateApiTest(input: GenerateApiTestInput): ToolTextResult {
   if (!input.specification?.trim()) {
     return errorResult("generate_api_test exige specification com o endpoint, schema ou proto.");
   }
 
   const stack = detectStack(input.projectRoot);
-  const protocol = input.protocol ?? detectProtocol(input.specification, input.sourceCode);
-  const language = inferLanguage(input.sourceCode, input.filePath);
-  const rendered = renderApiTest({
-    protocol,
-    specification: input.specification,
-    baseUrl: input.baseUrl ?? (protocol === "graphql" ? "http://127.0.0.1:4000/graphql" : "http://127.0.0.1:3000/resource"),
-    language: language === "python" ? "python" : "ts",
-  });
+  const { protocol, routes, rendered } = apiRender(input);
 
-  const cases = [
-    "Sucesso: status e corpo aderentes ao contrato.",
-    "Validação: campo obrigatório ausente, tipo errado, string vazia e limite numérico.",
-    "Autenticação e autorização: sem credencial e com credencial de outro recurso.",
-    "Não encontrado e conflito: id inexistente e repetição do mesmo comando.",
-    "Borda: unicode, payload grande e lista vazia.",
-  ];
+  const cases =
+    protocol !== "rest"
+      ? [
+          "Sucesso: status e corpo aderentes ao contrato.",
+          "Validação: campo obrigatório ausente, tipo errado, string vazia e limite numérico.",
+          "Autenticação e autorização: sem credencial e com credencial de outro recurso.",
+          "Não encontrado e conflito: id inexistente e repetição do mesmo comando.",
+          "Borda: unicode, payload grande e lista vazia.",
+        ]
+      : routes.length
+        ? [
+            ...routes.map((route) => `${route.method} ${route.path} responde ${route.status}.`),
+            ...routes
+              .filter((route) => route.validationStatus)
+              .map((route) => `${route.method} ${route.path} recusa corpo inválido com ${route.validationStatus}.`),
+            ...routes
+              .filter((route) => route.authStatus)
+              .map((route) => `${route.method} ${route.path} sem credencial responde ${route.authStatus}.`),
+          ]
+        : ["Nenhuma rota extraída. O teste falha até o handler mostrar método, path e status."];
 
   return textResult(
     doc([
@@ -66,12 +91,30 @@ export function generateApiTest(input: GenerateApiTestInput): ToolTextResult {
   );
 }
 
+export async function handleGenerateApiTest(input: GenerateApiTestInput & LoopFlags, server?: McpServer): Promise<ToolTextResult> {
+  const hydrated = await hydrateSource(server, input);
+  if ("isError" in hydrated && hydrated.isError) return hydrated;
+  const ready = hydrated as GenerateApiTestInput & LoopFlags;
+  const result = generateApiTest(ready);
+  if (result.isError) return result;
+  const { rendered } = apiRender(ready);
+  const runner: TestRunner | undefined = rendered.language === "python" ? "pytest" : "vitest";
+  return deliver({
+    server,
+    input: ready,
+    preface: result,
+    relativePath: rendered.fileName,
+    contents: rendered.code,
+    runner,
+  });
+}
+
 export function registerApiTools(server: McpServer): void {
   registerTool(
     server,
     "generate_api_test",
     "Gerar teste de API",
-    "Gera testes de contrato para REST, GraphQL ou gRPC, com sucesso, erro e bordas. Detecta o protocolo pelo texto quando protocol não vem preenchido.",
+    "Contrato grava e executa no runner local o teste de API (`*.test.ts` ou pytest) para REST, GraphQL ou gRPC; o gRPC falha até existir cliente. REST afirma método, path e um status só, o do handler.",
     {
       specification: z.string().describe("Endpoint, operação, schema ou trecho de código da API."),
       protocol: z.enum(["rest", "graphql", "grpc"]).optional(),
@@ -79,7 +122,10 @@ export function registerApiTools(server: McpServer): void {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
+      ...runShape,
     },
-    (args) => generateApiTest(args as unknown as GenerateApiTestInput),
+    (args) => handleGenerateApiTest(args as unknown as GenerateApiTestInput & LoopFlags, server),
+    { readOnly: false },
   );
 }

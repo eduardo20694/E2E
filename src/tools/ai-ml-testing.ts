@@ -4,6 +4,8 @@ import { doc, markdownTable } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
+import { runShape, writeShape } from "../lib/schema.js";
+import { deliver, slug, type LoopFlags } from "./loop.js";
 
 export interface ModelPlanInput {
   model: string;
@@ -112,26 +114,75 @@ export function generateLlmPromptTest(input: LlmPromptInput): ToolTextResult {
   );
 }
 
+function llmTestSource(input: LlmPromptInput): string {
+  const format = input.expectedFormat ?? "JSON ou texto no formato combinado";
+  return `import { describe, it, expect } from "vitest";
+
+const casos = [
+  { caso: "feliz", esperado: ${JSON.stringify(format)} },
+  { caso: "vazio", esperado: "erro orientado ou pedido de esclarecimento, sem inventar dado" },
+  { caso: "fora de escopo", esperado: "recusa curta, sem cumprir a tarefa alheia" },
+  { caso: "conteúdo não confiável", esperado: "o comportamento do sistema permanece o do prompt" },
+  { caso: "formato", esperado: "campos extras ignorados, campos obrigatórios presentes" },
+];
+
+describe("contrato do prompt", () => {
+  it("cada caso tem resultado esperado e não chama o modelo", () => {
+    expect(casos.every((caso) => caso.esperado.length > 0)).toBe(true);
+  });
+});
+`;
+}
+
+export async function handleSuggestModelTestingPlan(input: ModelPlanInput & LoopFlags, server?: McpServer): Promise<ToolTextResult> {
+  const result = suggestModelTestingPlan(input);
+  if (result.isError) return result;
+  return deliver({
+    server,
+    input,
+    preface: result,
+    relativePath: `docs/qa/plano-${slug(input.model)}.md`,
+    contents: result.content[0]?.text ?? "",
+  });
+}
+
+export async function handleGenerateLlmPromptTest(input: LlmPromptInput & LoopFlags, server?: McpServer): Promise<ToolTextResult> {
+  const result = generateLlmPromptTest(input);
+  if (result.isError) return result;
+  return deliver({
+    server,
+    input,
+    preface: result,
+    relativePath: "llm-prompt.test.ts",
+    contents: llmTestSource(input),
+    runner: "vitest",
+  });
+}
+
 export function registerAiMlTools(server: McpServer): void {
   registerTool(
     server,
     "suggest_model_testing_plan",
     "Plano de teste de modelo",
-    "Sugere acurácia, fatias de viés, drift e fallback do sistema em volta do modelo.",
+    "Modelo grava e não executa `docs/qa/*.md` com acurácia, fatias de viés, drift e fallback em volta do modelo.",
     {
       model: z.string(),
       task: z.string().optional(),
       slices: z.array(z.string()).optional(),
       sourceCode: z.string().optional(),
+      projectRoot: z.string().optional(),
+      filePath: z.string().optional(),
+      ...writeShape,
     },
-    (args) => suggestModelTestingPlan(args as unknown as ModelPlanInput),
+    (args) => handleSuggestModelTestingPlan(args as unknown as ModelPlanInput & LoopFlags, server),
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "suggest_ab_test_design",
     "Desenho de teste A/B",
-    "Estima o tamanho de amostra por variante para uma métrica de proporção, com 5% de significância e 80% de poder.",
+    "Amostra calcula e não grava o tamanho por variante para uma métrica de proporção, com 5% de significância e 80% de poder.",
     {
       metric: z.string(),
       baselineRate: z.number(),
@@ -144,11 +195,15 @@ export function registerAiMlTools(server: McpServer): void {
     server,
     "generate_llm_prompt_test",
     "Testes de prompt de LLM",
-    "Gera casos de contrato para a saída de um prompt: formato, vazio, fora de escopo e conteúdo de usuário não confiável.",
+    "Prompt grava e executa no runner local `llm-prompt.test.ts` para formato, vazio, fora de escopo e conteúdo de usuário não confiável.",
     {
       prompt: z.string(),
       expectedFormat: z.string().optional(),
+      projectRoot: z.string().optional(),
+      ...writeShape,
+      ...runShape,
     },
-    (args) => generateLlmPromptTest(args as unknown as LlmPromptInput),
+    (args) => handleGenerateLlmPromptTest(args as unknown as LlmPromptInput & LoopFlags, server),
+    { readOnly: false },
   );
 }

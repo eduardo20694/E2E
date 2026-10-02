@@ -5,7 +5,9 @@ import { doc } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { runShape, writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { runnerInstalled, type TestRunner } from "../lib/runner.js";
+import { deliver, resolveToolRoot, slug, type LoopFlags } from "./loop.js";
 
 export interface PactInput extends ProjectContextInput {
   consumer: string;
@@ -38,19 +40,54 @@ export function setupConsumerDrivenContracts(input: PactInput): ToolTextResult {
   );
 }
 
+function unitRunner(projectRoot?: string): TestRunner | undefined {
+  if (!projectRoot) return undefined;
+  if (runnerInstalled(projectRoot, "vitest")) return "vitest";
+  if (runnerInstalled(projectRoot, "jest")) return "jest";
+  return undefined;
+}
+
 export function registerContractAdvancedTools(server: McpServer): void {
   registerTool(
     server,
     "setup_consumer_driven_contracts",
     "Contrato dirigido pelo consumidor",
-    "Descreve Pact e Pact Broker: o consumidor publica o pacto e o provedor valida todos antes do deploy.",
+    "Pact grava `*.pact.test.ts` e executa no Vitest ou Jest quando o binário local existe; sem o binário, grava e não executa.",
     {
       consumer: z.string(),
       provider: z.string(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
+      ...runShape,
     },
-    (args) => setupConsumerDrivenContracts(args as unknown as PactInput),
+    async (args) => {
+      const input = args as unknown as PactInput & LoopFlags;
+      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+      const ready = { ...input, projectRoot: root ?? input.projectRoot };
+      const result = setupConsumerDrivenContracts(ready);
+      if (result.isError) return result;
+      const contents = `import { describe, it, expect } from "vitest";
+
+describe("pacto ${ready.consumer} para ${ready.provider}", () => {
+  it("o consumidor publica a interação que precisa", () => {
+    expect(${JSON.stringify(ready.consumer)}).not.toBe(${JSON.stringify(ready.provider)});
+  });
+});
+`;
+      const runner = unitRunner(ready.projectRoot);
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: `${slug(ready.consumer)}-${slug(ready.provider)}.pact.test.ts`,
+        contents,
+        runner,
+        runEligible: Boolean(runner),
+        skippedNote: runner ? undefined : "Não foi executado. Vitest ou Jest não está instalado.",
+      });
+    },
+    { readOnly: false },
   );
 }

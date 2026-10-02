@@ -43,6 +43,8 @@ function parseLcov(report: string): CoverageGap[] {
 
 function parseJsonCoverage(report: string): CoverageGap[] {
   const data = JSON.parse(report) as unknown;
+  const istanbul = istanbulGaps(data);
+  if (istanbul.length) return istanbul;
   const files = Array.isArray(data)
     ? data
     : data && typeof data === "object" && "files" in data
@@ -67,6 +69,29 @@ function parseJsonCoverage(report: string): CoverageGap[] {
         uncoveredLines: uncovered.slice(0, 30),
         coveredLines: 0,
         reason: reasonFor(file, uncovered.length, record.pct ?? 0),
+      },
+    ];
+  });
+}
+
+function istanbulGaps(data: unknown): CoverageGap[] {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return [];
+  const entries = Object.values(data as Record<string, unknown>);
+  if (!entries.some((entry) => entry && typeof entry === "object" && "s" in (entry as object))) return [];
+  return entries.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    const record = entry as { path?: string; s?: Record<string, number>; statementMap?: Record<string, { start?: { line?: number } }> };
+    if (!record.path || !record.s) return [];
+    const uncovered = Object.entries(record.s)
+      .filter(([, hits]) => hits === 0)
+      .map(([id]) => record.statementMap?.[id]?.start?.line)
+      .filter((line): line is number => typeof line === "number");
+    return [
+      {
+        file: record.path,
+        uncoveredLines: uncovered.slice(0, 30),
+        coveredLines: Object.values(record.s).filter((hits) => hits > 0).length,
+        reason: reasonFor(record.path, uncovered.length, Object.keys(record.s).length),
       },
     ];
   });

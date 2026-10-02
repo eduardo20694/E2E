@@ -1,12 +1,17 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { detectStack, stackSummary } from "../lib/detect.js";
+import { detectStack, type DetectedStack, stackSummary } from "../lib/detect.js";
+import { sampleArg } from "../lib/codegen.js";
 import { codeBlock, doc, markdownTable, splitSteps } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
+import { analyzeFunction, formatValue, parseSampleCode } from "../lib/oracle.js";
 import { productionNotice } from "../lib/production.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { runShape, writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { extractSymbols } from "../lib/symbols.js";
+import type { TestRunner } from "../lib/runner.js";
+import { deliver, resolveToolRoot, slug, type LoopFlags } from "./loop.js";
 
 function chooseFlag(stack: ReturnType<typeof detectStack>): string {
   return stack.flags[0] ?? "unleash";
@@ -19,11 +24,23 @@ function chooseCanary(stack: ReturnType<typeof detectStack>): string {
   return "argo-rollouts";
 }
 
-function chooseSynthetic(stack: ReturnType<typeof detectStack>): string {
-  if (stack.observability.includes("checkly")) return "checkly";
-  if (stack.observability.includes("datadog")) return "datadog";
-  if (stack.e2eFrameworks.includes("playwright")) return "playwright-agendado";
-  return "checkly";
+function canaryReason(stack: DetectedStack, tool: string): string {
+  if (tool === "flagger") {
+    return "O repositório referencia Flagger, então o controlador é o Flagger (flagger.app/v1beta1, kind: Canary), não o Argo Rollouts.";
+  }
+  if (stack.delivery.includes("argo-rollouts")) {
+    return "O repositório referencia Argo Rollouts, então o controlador é o Argo Rollouts.";
+  }
+  if (stack.delivery.includes("kubernetes") || stack.delivery.includes("helm")) {
+    return "Há Kubernetes ou Helm sem Flagger, então o controlador é o Argo Rollouts.";
+  }
+  return "Não há Flagger no repositório, então o controlador é o Argo Rollouts.";
+}
+
+function jsRunner(stack: DetectedStack): TestRunner | undefined {
+  if (stack.unitFrameworks.includes("vitest")) return "vitest";
+  if (stack.unitFrameworks.includes("jest")) return "jest";
+  return undefined;
 }
 
 export interface SmokeProdInput extends ProjectContextInput {
@@ -49,34 +66,7 @@ export function generateSmokeTestProd(input: SmokeProdInput): ToolTextResult {
       "## Fluxos",
       flows.map((flow, index) => `${index + 1}. ${flow}`).join("\n"),
       "## Script",
-      codeBlock(
-        "ts",
-        `import { test, expect } from "@playwright/test";
-
-const baseUrl = process.env.PROD_BASE_URL ?? "${baseUrl}";
-const user = process.env.SYNTHETIC_USER;
-const password = process.env.SYNTHETIC_PASSWORD;
-
-test("health responde", async ({ request }) => {
-  const response = await request.get(baseUrl + "/health");
-  expect(response.ok()).toBeTruthy();
-});
-
-test("login sintético enxerga a área logada", async ({ page }) => {
-  test.skip(!user || !password, "Defina SYNTHETIC_USER e SYNTHETIC_PASSWORD");
-  await page.goto(baseUrl + "/login");
-  await page.getByLabel("E-mail").fill(user!);
-  await page.getByLabel("Senha").fill(password!);
-  await page.getByRole("button", { name: /entrar/i }).click();
-  await expect(page.getByRole("heading", { name: /painel/i })).toBeVisible();
-});
-
-test("checkout sintético não cobra", async ({ page }) => {
-  test.skip(!user, "Sem conta sintética o checkout em produção não roda");
-  await page.goto(baseUrl + "/checkout?synthetic=1");
-  await expect(page.getByText(/ambiente de teste|pedido sintético/i)).toBeVisible();
-});`,
-      ),
+      codeBlock("ts", smokeScript(baseUrl)),
       "Se o produto não tem pedido sintético, o smoke para antes do pagamento. Criar cobrança real para 'ver se passa' não é smoke.",
       input.sourceCode ? "O código aberto ajuda a nomear a rota. A URL continua sendo a de produção, não a do teste local." : undefined,
       citeKnowledge(["shift-right", "e2e-testing", "test-environments"]),
@@ -106,6 +96,7 @@ export function setupCanaryRelease(input: CanaryInput): ToolTextResult {
       stack.delivery.includes("flagger")
         ? "Flagger já aparece no repositório. O canário abaixo segue essa ferramenta."
         : `Ferramenta sugerida: **${tool}**. Spinnaker entra se o pipeline de vocês já for Spinnaker; não troque o deploy inteiro só pelo canário.`,
+      `**Controlador:** ${tool}. ${canaryReason(stack, tool)}`,
       markdownTable(
         ["Passo", "Tráfego", "Abort"],
         [
@@ -114,45 +105,9 @@ export function setupCanaryRelease(input: CanaryInput): ToolTextResult {
           ["3", "100%", "análise continua por mais 15 min"],
         ],
       ),
-      "## Exemplo Argo Rollouts",
-      codeBlock(
-        "yaml",
-        `apiVersion: argoproj.io/v1alpha1
-kind: Rollout
-metadata:
-  name: ${service}
-spec:
-  replicas: 4
-  strategy:
-    canary:
-      steps:
-        - setWeight: ${percent}
-        - pause: { duration: 10m }
-        - setWeight: 25
-        - pause: { duration: 10m }
-      analysis:
-        templates:
-          - templateName: ${service}-saude
-        startingStep: 0
----
-apiVersion: argoproj.io/v1alpha1
-kind: AnalysisTemplate
-metadata:
-  name: ${service}-saude
-spec:
-  metrics:
-    - name: erro
-      failureLimit: 1
-      provider:
-        prometheus:
-          query: sum(rate(http_requests_total{app="${service}",code=~"5.."}[2m]))
-    - name: latencia
-      failureLimit: 1
-      provider:
-        prometheus:
-          query: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{app="${service}"}[2m])) by (le))`,
-      ),
-      "Flagger usa um Canary com a mesma ideia: analysis, webhook de métrica e rollback para o Deployment estável. Sem métrica de erro e latência, o canário é só um deploy lento.",
+      "## Manifesto",
+      codeBlock("yaml", canaryManifest(tool, service, percent)),
+      "Sem métrica de erro e latência, o canário é só um deploy lento. O manifesto não é aplicado.",
       citeKnowledge(["shift-right", "test-environments"]),
     ]),
   );
@@ -180,12 +135,15 @@ export function setupFeatureFlagTesting(input: FlagInput): ToolTextResult {
       markdownTable(
         ["Fatia", "Quem", "Critério para avançar"],
         [
-          ["equipe", "contas sintéticas e o time", input.successMetric ?? "fluxo feliz sem erro novo"],
-          ["1%", "amostra aleatória", "erro e latência iguais ao controle"],
-          ["10% e 50%", "aumenta só com o critério verde", "suporte não vê regressão do caminho antigo"],
-          ["100%", "flag ainda existe", "remover a flag é outro pull request, depois da calma"],
+          ["equipe interna", "contas sintéticas e o time", input.successMetric ?? "fluxo feliz sem erro novo"],
+          ["1", "amostra aleatória", "erro e latência iguais ao controle"],
+          ["10 e 50", "aumenta só com o critério verde", "suporte não vê regressão do caminho antigo"],
+          ["100", "flag ainda existe", "remover a flag é outro pull request, depois da calma"],
         ],
       ),
+      "## Teste local das fatias",
+      codeBlock("ts", flagTest(feature, stack).code),
+      "O teste não chama o serviço de flag em produção.",
       "## O que o teste prova",
       "- Flag desligada: comportamento antigo, byte a byte no que o usuário vê.",
       "- Flag ligada na conta sintética: caminho novo, em produção, sem esperar o percentual.",
@@ -203,15 +161,15 @@ export interface ChaosInput extends ProjectContextInput {
 export function setupChaosExperiment(input: ChaosInput): ToolTextResult {
   const stack = detectStack(input.projectRoot);
   const target = input.target ?? "um pod da API";
-  const tool = stack.delivery.includes("kubernetes") ? "litmus" : "experimento manual no canário";
 
   return textResult(
     doc([
-      `# Chaos — ${tool}`,
+      "# Chaos — Chaos Mesh",
       productionNotice(`O experimento mexe em infraestrutura real: ${target}.`),
       "## Stack detectada",
       stackSummary(stack),
-      "Ferramentas comuns: Litmus ou Chaos Mesh no Kubernetes, Gremlin quando o contrato da empresa já é esse. O primeiro experimento não é 'derrubar a rede do cluster'.",
+      "O artefato é um PodChaos do Chaos Mesh. Não é aplicado: sem kubectl e sem chaos no cluster.",
+      codeBlock("yaml", chaosManifest(target)),
       "## Ficha do experimento",
       `- Hipótese: ${input.hypothesis ?? "se uma instância cair, o erro do serviço fica abaixo de 1% e o cliente repete com sucesso."}`,
       `- Estado estável: taxa de erro e p95 dos 15 min anteriores.`,
@@ -234,21 +192,21 @@ export interface SyntheticInput extends ProjectContextInput {
 
 export function setupSyntheticMonitoring(input: SyntheticInput): ToolTextResult {
   const stack = detectStack(input.projectRoot);
-  const tool = chooseSynthetic(stack);
+  const artifact = syntheticArtifact(stack, input.journey ?? "login sintético e leitura do painel", input.baseUrl ?? "https://app.example.com");
   const journey = input.journey ?? "login sintético e leitura do painel";
   const steps = splitSteps(journey);
 
   return textResult(
     doc([
-      `# Monitoramento sintético — ${tool}`,
+      `# Monitoramento sintético — ${artifact.tool}`,
       productionNotice("Um robô executa a jornada em produção o dia inteiro, com a conta sintética."),
       "## Stack detectada",
       stackSummary(stack),
       `Jornada: ${journey}`,
       steps.map((step, index) => `${index + 1}. ${step}`).join("\n"),
-      tool === "playwright-agendado"
-        ? "Playwright já está no projeto. Agende o mesmo spec do smoke a cada 5 minutos, com alerta. Não aumente o paralelismo: isto não é teste de carga."
-        : `${tool} publica a jornada e alerta quando o passo quebra. Datadog Synthetics e Checkly fazem o mesmo papel.`,
+      artifact.reason,
+      codeBlock(artifact.language, artifact.contents),
+      "O arquivo não é executado daqui.",
       "## Alerta",
       "- Duas falhas seguidas, não uma. Uma falha isolada é rede do ponto de presença.",
       "- O alerta diz o passo, a região e o horário. Sem isso ninguém distingue produto de rota.",
@@ -264,10 +222,13 @@ export interface DarkLaunchInput extends ProjectContextInput {
 
 export function setupDarkLaunch(input: DarkLaunchInput): ToolTextResult {
   const change = input.change ?? "a implementação nova";
+  const spec = darkLaunchTest(input);
   return textResult(
     doc([
       "# Dark launch",
       productionNotice(`${change} executa em paralelo ao caminho antigo, com o mesmo input real. O usuário continua vendo só o caminho antigo.`),
+      "O spec compara localmente. Não executa contra produção.",
+      codeBlock("ts", spec),
       "## Regras",
       "- O caminho novo não grava, não cobra e não envia mensagem. Se gravar, não é dark launch, é dupla escrita.",
       "- Compare status, corpo relevante e tempo. Guarde a diferença, não o payload com dado pessoal.",
@@ -331,108 +292,492 @@ Funcionalidade: regressão do incidente
   );
 }
 
+function smokeScript(baseUrl: string): string {
+  return `import { test, expect } from "@playwright/test";
+
+const baseUrl = process.env.PROD_BASE_URL ?? "${baseUrl}";
+const user = process.env.SYNTHETIC_USER;
+const password = process.env.SYNTHETIC_PASSWORD;
+
+test("health responde", async ({ request }) => {
+  const response = await request.get(baseUrl + "/health");
+  expect(response.ok()).toBeTruthy();
+});
+
+test("login sintético enxerga a área logada", async ({ page }) => {
+  test.skip(!user || !password, "Defina SYNTHETIC_USER e SYNTHETIC_PASSWORD");
+  await page.goto(baseUrl + "/login");
+  await page.getByLabel("E-mail").fill(user!);
+  await page.getByLabel("Senha").fill(password!);
+  await page.getByRole("button", { name: /entrar/i }).click();
+  await expect(page.getByRole("heading", { name: /painel/i })).toBeVisible();
+});
+
+test("checkout sintético não cobra", async ({ page }) => {
+  test.skip(!user, "Sem conta sintética o checkout em produção não roda");
+  await page.goto(baseUrl + "/checkout?synthetic=1");
+  await expect(page.getByText(/ambiente de teste|pedido sintético/i)).toBeVisible();
+});`;
+}
+
+function canaryManifest(tool: string, service: string, percent: number): string {
+  if (tool === "flagger") {
+    return `apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: ${service}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: ${service}
+  service:
+    port: 80
+  analysis:
+    interval: 1m
+    threshold: 5
+    maxWeight: 100
+    stepWeight: ${percent}
+    metrics:
+      - name: request-success-rate
+        thresholdRange:
+          min: 99
+        interval: 1m
+      - name: request-duration
+        thresholdRange:
+          max: 500
+        interval: 1m
+    webhooks:
+      - name: rollback
+        type: rollback
+        url: http://flagger-loadtester/
+`;
+  }
+  return `apiVersion: argoproj.io/v1alpha1
+kind: Rollout
+metadata:
+  name: ${service}
+spec:
+  replicas: 4
+  strategy:
+    canary:
+      steps:
+        - setWeight: ${percent}
+        - pause: { duration: 10m }
+        - setWeight: 25
+        - pause: { duration: 10m }
+      analysis:
+        templates:
+          - templateName: ${service}-saude
+        startingStep: 0
+---
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: ${service}-saude
+spec:
+  metrics:
+    - name: erro
+      failureLimit: 1
+      provider:
+        prometheus:
+          query: sum(rate(http_requests_total{app="${service}",code=~"5.."}[2m]))
+    - name: latencia
+      failureLimit: 1
+      provider:
+        prometheus:
+          query: histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{app="${service}"}[2m])) by (le))
+  rollback: true`;
+}
+
+function flagTest(feature: string, stack: DetectedStack): { code: string; runner?: TestRunner } {
+  const runner = jsRunner(stack);
+  const sdk = stack.flags.find((flag) => flag === "unleash" || flag === "launchdarkly" || flag === "growthbook");
+  const importLine = runner === "jest"
+    ? `import { describe, it, expect } from "@jest/globals";`
+    : `import { describe, it, expect } from "vitest";`;
+  const sdkImport = sdk === "unleash"
+    ? `import * as unleashSdk from "unleash-client";\n`
+    : sdk === "launchdarkly"
+      ? `import * as launchdarklySdk from "@launchdarkly/node-server-sdk";\n`
+      : sdk === "growthbook"
+        ? `import * as growthbookSdk from "@growthbook/growthbook";\n`
+        : "";
+  const sdkCheck = sdk === "unleash"
+    ? `    expect(unleashSdk).toBeTruthy();\n`
+    : sdk === "launchdarkly"
+      ? `    expect(launchdarklySdk).toBeTruthy();\n`
+      : sdk === "growthbook"
+        ? `    expect(growthbookSdk).toBeTruthy();\n`
+        : "";
+  const code = `${importLine}
+${sdkImport}
+const fatias = ["equipe interna", 1, 10, 50, 100];
+
+describe("flag ${feature.replace(/["\\]/g, "")}", () => {
+  it("afirma o plano de fatias sem chamar o serviço de flag em produção", () => {
+    expect(fatias).toEqual(["equipe interna", 1, 10, 50, 100]);
+${sdkCheck}  });
+});
+`;
+  return { code, runner };
+}
+
+function chaosManifest(target: string): string {
+  const service = slug(target);
+  return `apiVersion: chaos-mesh.org/v1alpha1
+kind: PodChaos
+metadata:
+  name: ${service}-pod-failure
+spec:
+  action: pod-failure
+  mode: one
+  duration: 30s
+  selector:
+    labelSelectors:
+      app: ${service}
+`;
+}
+
+function syntheticArtifact(stack: DetectedStack, journey: string, baseUrl: string): {
+  tool: string;
+  reason: string;
+  relativePath: string;
+  contents: string;
+  language: string;
+} {
+  if (stack.observability.includes("checkly")) {
+    return {
+      tool: "checkly",
+      reason: "A stack já tem Checkly. O arquivo é checkly.config.ts com um browser check do fluxo.",
+      relativePath: "checkly.config.ts",
+      language: "ts",
+      contents: checklyConfig(journey, baseUrl),
+    };
+  }
+  if (stack.observability.includes("datadog")) {
+    return {
+      tool: "datadog",
+      reason: "A stack já tem Datadog. O arquivo é um teste sintético com passos HTTP de health.",
+      relativePath: "deploy/e2e/synthetic-datadog.yaml",
+      language: "yaml",
+      contents: datadogSynthetic(baseUrl),
+    };
+  }
+  return {
+    tool: "playwright",
+    reason: "Não há Checkly nem Datadog. O spec reutiliza o smoke: health, conta sintética e test.skip sem segredo.",
+    relativePath: "prod-tests/synthetic.spec.ts",
+    language: "ts",
+    contents: smokeScript(baseUrl),
+  };
+}
+
+function checklyConfig(journey: string, baseUrl: string): string {
+  const title = journey.replace(/["\\]/g, "").slice(0, 80);
+  return `import { BrowserCheck } from "checkly/constructs";
+
+new BrowserCheck("fluxo-sintetico", {
+  name: "${title}",
+  frequency: 10,
+  locations: ["us-east-1"],
+  code: {
+    content: \`
+      const { test, expect } = require("@playwright/test");
+      test("fluxo sintético", async ({ page }) => {
+        await page.goto(process.env.PROD_BASE_URL ?? "${baseUrl}");
+      });
+    \`,
+  },
+});
+`;
+}
+
+function datadogSynthetic(baseUrl: string): string {
+  return `apiVersion: datadoghq.com/v1
+kind: SyntheticTest
+metadata:
+  name: synthetic-health
+spec:
+  type: api
+  subtype: multi
+  steps:
+    - name: health
+      subtype: http
+      request:
+        method: GET
+        url: ${baseUrl.replace(/\/$/, "")}/health
+      assertions:
+        - type: statusCode
+          operator: is
+          target: 200
+`;
+}
+
+function darkLaunchTest(input: DarkLaunchInput): string {
+  const source = input.sourceCode ?? "";
+  const functions = extractSymbols(source).filter((symbol) => symbol.kind === "function");
+  const pure = functions.filter((symbol) => {
+    const contract = analyzeFunction(
+      source,
+      symbol.name,
+      symbol.params.map((name, index) => ({ name, value: parseSampleCode(sampleArg(name, index)) })),
+    );
+    return contract.pure && contract.evaluated;
+  });
+  if (pure.length >= 2) {
+    const antigo = pure.find((symbol) => /antigo|old|legacy|atual/i.test(symbol.name)) ?? pure[0];
+    const novo = pure.find((symbol) => symbol !== antigo && /novo|new|shadow/i.test(symbol.name)) ?? pure.find((symbol) => symbol !== antigo) ?? pure[1];
+    const args = (symbol: typeof antigo) =>
+      symbol.params.map((name, index) => formatValue(parseSampleCode(sampleArg(name, index)), "js")).join(", ");
+    const specifier = input.filePath ? `../${input.filePath.replace(/\\/g, "/").replace(/\.[^.]+$/, "")}` : "./module";
+    return `import { describe, it, expect } from "vitest";
+import { ${antigo.name}, ${novo.name} } from "${specifier}";
+
+describe("dark launch", () => {
+  it("compara a sombra com o caminho antigo", () => {
+    expect(${novo.name}(${args(novo)})).toEqual(${antigo.name}(${args(antigo)}));
+  });
+});
+`;
+  }
+  return `import { describe, it, expect } from "vitest";
+
+describe("dark launch", () => {
+  it("a sombra não grava e não mostra ao usuário", () => {
+    expect.fail("A sombra não grava e não mostra o resultado ao usuário.");
+  });
+});
+`;
+}
+
+async function rooted<T extends LoopFlags>(server: McpServer, input: T): Promise<T> {
+  const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+  return { ...input, projectRoot: root ?? input.projectRoot };
+}
+
+const NOT_RUN = "Não foi executado.";
+
 export function registerProductionTools(server: McpServer): void {
   registerTool(
     server,
     "generate_smoke_test_prod",
     "Smoke em produção",
-    "Gera um smoke curto para depois do deploy, contra produção, só com health-check e conta sintética, sem efeito colateral real.",
+    "Smoke grava e não executa `prod-tests/smoke.spec.ts` com health-check e conta sintética, sem efeito colateral real em produção.",
     {
       flows: z.array(z.string()).optional().describe("Fluxos críticos. O padrão é health, login sintético e checkout sem cobrança."),
       baseUrl: z.string().optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => generateSmokeTestProd(args as unknown as SmokeProdInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as SmokeProdInput & LoopFlags);
+      const result = generateSmokeTestProd(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "prod-tests/smoke.spec.ts",
+        contents: smokeScript(ready.baseUrl ?? "https://app.example.com"),
+        neverRun: true,
+        skippedNote: NOT_RUN,
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "setup_canary_release",
     "Canary release",
-    "Sugere canário com percentual, métrica de abort e rollback. Prefere Flagger ou Argo Rollouts se o repositório já tiver isso.",
+    "Canário grava e não executa deploy/e2e/*-canary.yaml: Flagger se o repo tem Flagger, senão Argo Rollouts, com rollback e sem aplicar o manifesto.",
     {
       service: z.string().optional(),
       initialPercent: z.number().optional().describe("Percentual inicial, até 20."),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => setupCanaryRelease(args as unknown as CanaryInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as CanaryInput & LoopFlags);
+      const result = setupCanaryRelease(ready);
+      if (result.isError) return result;
+      const percent = ready.initialPercent && ready.initialPercent > 0 && ready.initialPercent <= 20 ? ready.initialPercent : 5;
+      const service = ready.service ?? "api";
+      const tool = chooseCanary(detectStack(ready.projectRoot));
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: `deploy/e2e/${slug(service)}-canary.yaml`,
+        contents: canaryManifest(tool, service, percent),
+        neverRun: true,
+        skippedNote: NOT_RUN,
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "setup_feature_flag_testing",
     "Teste com feature flag",
-    "Desenha o rollout gradual de uma flag em produção (LaunchDarkly, Unleash ou GrowthBook) e o critério para avançar cada fatia.",
+    "Flag grava e executa no runner local flags/*.test.ts com as fatias em toEqual, sem chamar serviço de flag em produção; sem Vitest ou Jest, grava e não executa.",
     {
       feature: z.string().optional(),
       successMetric: z.string().optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
+      ...runShape,
     },
-    (args) => setupFeatureFlagTesting(args as unknown as FlagInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as FlagInput & LoopFlags);
+      const result = setupFeatureFlagTesting(ready);
+      if (result.isError) return result;
+      const feature = ready.feature ?? "feature-nova";
+      const file = flagTest(feature, detectStack(ready.projectRoot));
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: `flags/${slug(feature)}.test.ts`,
+        contents: file.code,
+        runner: file.runner,
+        runEligible: Boolean(file.runner),
+        skippedNote: file.runner ? undefined : NOT_RUN,
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "setup_chaos_experiment",
     "Experimento de chaos",
-    "Monta um experimento de chaos com hipótese, blast radius e abort. Não propõe derrubar o cluster inteiro.",
+    "Chaos grava e não executa deploy/e2e/chaos.yaml no formato Chaos Mesh (PodChaos); não aplica, não chama kubectl e não derruba o cluster.",
     {
       hypothesis: z.string().optional(),
       target: z.string().optional().describe("O que falha: um pod, uma dependência, latência."),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => setupChaosExperiment(args as unknown as ChaosInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as ChaosInput & LoopFlags);
+      const result = setupChaosExperiment(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "deploy/e2e/chaos.yaml",
+        contents: chaosManifest(ready.target ?? "um pod da API"),
+        neverRun: true,
+        skippedNote: NOT_RUN,
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "setup_synthetic_monitoring",
     "Monitoramento sintético",
-    "Gera a jornada que um robô repete em produção o dia inteiro, com Checkly, Datadog Synthetics ou Playwright agendado.",
+    "Sintético grava e não executa checkly.config.ts, deploy/e2e/synthetic-datadog.yaml ou prod-tests/synthetic.spec.ts, conforme a observabilidade do repo.",
     {
       journey: z.string().optional(),
       baseUrl: z.string().optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => setupSyntheticMonitoring(args as unknown as SyntheticInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as SyntheticInput & LoopFlags);
+      const result = setupSyntheticMonitoring(ready);
+      if (result.isError) return result;
+      const artifact = syntheticArtifact(
+        detectStack(ready.projectRoot),
+        ready.journey ?? "login sintético e leitura do painel",
+        ready.baseUrl ?? "https://app.example.com",
+      );
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: artifact.relativePath,
+        contents: artifact.contents,
+        neverRun: true,
+        skippedNote: NOT_RUN,
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "setup_dark_launch",
     "Dark launch",
-    "Descreve como rodar código novo em paralelo ao antigo em produção, comparando saída sem expor o usuário e sem gravar duas vezes.",
+    "Sombra grava e executa no runner local dark-launch/*.test.ts comparando duas funções puras, sem chamar produção; sem runner, grava e não executa.",
     {
       change: z.string().optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
+      ...runShape,
     },
-    (args) => setupDarkLaunch(args as unknown as DarkLaunchInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as DarkLaunchInput & LoopFlags);
+      const result = setupDarkLaunch(ready);
+      if (result.isError) return result;
+      const runner = jsRunner(detectStack(ready.projectRoot));
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: `dark-launch/${slug(ready.change ?? "dark-launch")}.test.ts`,
+        contents: darkLaunchTest(ready),
+        runner,
+        runEligible: Boolean(runner),
+        skippedNote: runner ? undefined : NOT_RUN,
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "production_incident_test_review",
     "Regressão a partir de incidente",
-    "Lê um incidente de produção e aponta a camada que deveria ter pego o problema, com um caso de regressão.",
+    "Incidente grava e não executa `docs/qa/incidente.md` apontando a camada que deveria ter pego o defeito de produção.",
     {
       incident: z.string().describe("O que aconteceu em produção, em linguagem natural."),
       detectedIn: z.string().optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => productionIncidentTestReview(args as unknown as IncidentInput),
+    async (args) => {
+      const ready = await rooted(server, args as unknown as IncidentInput & LoopFlags);
+      const result = productionIncidentTestReview(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "docs/qa/incidente.md",
+        contents: result.content[0]?.text ?? "",
+      });
+    },
+    { readOnly: false },
   );
 }

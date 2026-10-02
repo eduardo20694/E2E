@@ -2,7 +2,7 @@
 
 Servidor [MCP](https://modelcontextprotocol.io) local para o Cursor atuar como especialista de teste full-stack. Transporte stdio, SDK `@modelcontextprotocol/sdk`, schemas com Zod.
 
-São **63 tools**, **32 resources** e **8 prompts**. Cada tool cobre um domínio. A tabela no final deste arquivo diz se o resultado é mock, ambiente real isolado ou produção real. A partir da versão 3 o servidor também lê o workspace, grava o teste, executa o runner do projeto e lê JUnit ou Allure.
+São **64 tools**, **33 resources** e **8 prompts**. Cada tool cobre um domínio. A tabela no final deste arquivo diz se o resultado é mock, ambiente real isolado ou produção real. A partir da versão 3 o servidor também lê o workspace, grava o teste, executa o runner do projeto e lê JUnit ou Allure.
 
 ## Requisitos
 
@@ -54,7 +54,11 @@ Passe `projectRoot` com a raiz do repositório aberto quando quiser detecção d
 
 ## Tools
 
+O primeiro passo, no arquivo editado ou aberto, é `map_tests_for_edit` (`filePath` e `projectRoot`). Siga a ordem que ela devolver. Não escolha outra tool no lugar.
+
 Peça em linguagem natural. O agente do Cursor chama a tool. Quando houver arquivo aberto, encaminhe o conteúdo em `sourceCode` e o caminho em `filePath`.
+
+Teste de tela usa os controles e a rota do arquivo; teste de API usa método, path e status do handler. O E2E Playwright cria a tela e os retornos no próprio teste, a partir do arquivo da página.
 
 ### Geração por camada
 
@@ -62,7 +66,7 @@ Peça em linguagem natural. O agente do Cursor chama a tool. Quando houver arqui
 | --- | --- | --- |
 | `generate_unit_test` | Teste unitário em Jest, Vitest, pytest, JUnit ou RSpec, com mock se houver dependência externa | "Gera o unitário desta função em `src/pricing.ts`. projectRoot é o workspace." |
 | `generate_integration_test` | Integração em ambiente real isolado. Diz o que mockar (terceiro) e o que não mockar (banco e fila do sistema) | "Teste de integração da API de pedidos com Postgres." |
-| `generate_e2e_test` | Fluxo em Playwright, Cypress ou Selenium para staging, com setup e teardown de dado fake | "E2E: abrir a home, entrar e ver o painel." |
+| `generate_e2e_test` | Teste local. A página é HTML criado dos controles do arquivo; os retornos JSON nascem no teste. Sem app no ar e sem rede externa | "E2E do checkout a partir de `src/pages/Checkout.tsx`." |
 | `generate_api_test` | Contrato REST, GraphQL ou gRPC, com sucesso, erro e borda | "Contrato do `POST /orders`, incluindo 400 e 401." |
 | `generate_mobile_test` | Fluxo Appium (Android, iOS ou ambos) | "Teste Appium do login no Android." |
 
@@ -185,15 +189,16 @@ Com `projectRoot`, o servidor lê `package.json`, `requirements.txt`, `pyproject
 
 | Tool | Onde vive |
 | --- | --- |
+| `map_tests_for_edit` | Leitura. Diz a ordem das tools para o arquivo editado. Não grava e não executa. |
 | `generate_unit_test` | Mock. Sem rede, sem banco, sem produção. |
 | `boundary_value_analysis`, `equivalence_partitioning`, `decision_table`, `state_transition_test`, `pairwise_test_generator` | Design. Não executa ambiente nenhum. |
 | `generate_integration_test` | Real isolado. Banco e fila do sistema de verdade, descartáveis. Terceiro com custo fica mockado. |
 | `generate_api_test` | Contrato em teste ou staging. Não é carga em produção. |
-| `generate_e2e_test` | Staging, dado fake, setup e teardown. Não é produção. |
+| `generate_e2e_test` | Local. A tela e os retornos JSON são criados no teste, a partir do arquivo da página. Sem app no ar e sem rede externa. |
 | `generate_mobile_test` | Emulador ou device de teste. |
-| `suggest_performance_test_plan` | Ambiente autorizado para carga. Não é produção sem acordo de janela. |
-| `suggest_security_checklist`, `suggest_accessibility_audit`, `suggest_compatibility_matrix` | Plano. A execução de acessibilidade pode ser staging. |
-| `mutation_testing_report`, `visual_regression_setup`, `flakiness_analyzer`, `code_coverage_advisor`, `defect_density_report`, `mttr_report` | Diagnóstico da suíte ou dos incidentes. Não disparam produção. |
+| `suggest_performance_test_plan` | k6 em localhost se o binário existir. Host externo não executa. |
+| `suggest_security_checklist`, `suggest_accessibility_audit`, `suggest_compatibility_matrix` | Checklist ou auditoria. Auth 401/403 e axe só em localhost. |
+| `mutation_testing_report`, `visual_regression_setup`, `flakiness_analyzer`, `code_coverage_advisor`, `defect_density_report`, `mttr_report` | Mutação e screenshot local se a ferramenta já está instalada. Não disparam produção. |
 | `generate_test_plan`, `generate_bug_report`, `generate_gherkin_scenario`, `generate_traceability_matrix` | Documento. |
 | `suggest_test_pyramid_balance`, `risk_based_prioritization`, `shift_left_right_recommendations`, `environment_strategy_advisor` | Estratégia. A última nomeia a natureza de cada ambiente. |
 | `generate_smoke_test_prod`, `setup_canary_release`, `setup_feature_flag_testing`, `setup_chaos_experiment`, `setup_synthetic_monitoring`, `setup_dark_launch`, `production_incident_test_review` | Produção real. Sem mock do caminho crítico. Exigem dado sintético, blast radius e rollback. Não substituem o shift-left. |
@@ -202,14 +207,14 @@ Com `projectRoot`, o servidor lê `package.json`, `requirements.txt`, `pyproject
 | `setup_service_virtualization` | Mock de terceiro. O banco do sistema continua real isolado. |
 | `generate_property_based_test`, `generate_snapshot_test`, `generate_golden_master_test` | Mock. Sem rede e sem produção. |
 | `generate_fuzz_test` | Local ou isolado. Não aponta para produção. |
-| `suggest_sast_setup`, `suggest_sca_setup` | Análise estática no CI. Não executa o produto. |
+| `suggest_sast_setup`, `suggest_sca_setup` | Scanner local se o binário já está instalado. Não executa o produto. |
 | `generate_i18n_test` | Mock ou componente. Não é produção. |
-| `setup_disaster_recovery_test` | Restore real numa cópia. Não é o banco que serve o cliente. |
-| `suggest_compliance_checklist` | Roteiro. Não é parecer jurídico. |
+| `setup_disaster_recovery_test` | Roteiro de restore numa cópia. Não executa restore. |
+| `suggest_compliance_checklist` | Roteiro. Não é parecer jurídico nem scanner. |
 | `suggest_model_testing_plan`, `suggest_ab_test_design`, `generate_llm_prompt_test` | Avaliação offline ou experimento desenhado antes de olhar o resultado. |
 | `suggest_test_impact_analysis`, `suggest_test_parallelization`, `suggest_flaky_test_quarantine` | Pipeline. A suíte inteira continua no merge. |
 | `suggest_test_management_tool`, `suggest_reporting_setup` | Ferramenta de processo. A automação segue no repositório. |
-| `setup_consumer_driven_contracts` | Contrato no CI. Não substitui o smoke em produção. |
+| `setup_consumer_driven_contracts` | Pact no Vitest ou Jest local, se o binário existir. Não substitui o smoke em produção. |
 | `calculate_cost_of_quality`, `suggest_automation_roi` | Conta de planejamento. Não executa teste. |
 | `read_workspace` | Diagnóstico local. Lê a pasta aberta no Cursor, sem colar o fonte. |
 | `write_test_file` | Grava no repositório, só dentro da raiz e só extensão de teste. |
@@ -268,7 +273,29 @@ Prompts novos: `/e2e-legacy-code-safety-net`, `/e2e-ml-test-plan`, `/e2e-pipelin
 
 ## Ciclo fechado
 
-A raiz sai, nesta ordem, de `projectRoot`, de `E2E_PROJECT_ROOT`, das pastas que o Cursor expõe, ou subindo a partir de `filePath` até um `package.json` (ou equivalente). Sem raiz, o servidor não adivinha o diretório de trabalho do processo.
+A raiz sai, nesta ordem, de `projectRoot`, de `E2E_PROJECT_ROOT`, das pastas que o Cursor expõe, ou subindo a partir de `filePath` até um manifesto (`package.json` ou equivalente). Sem raiz, a tool devolve o artefato no chat. O servidor não usa o diretório de trabalho do processo como projeto.
+
+Com raiz, o artefato é gravado quando `writeToProject` vem omitido. `writeToProject: false` não grava. Arquivo que já existe só é substituído com `overwrite: true`. `run` omitido executa só os geradores cujo runner está na lista fechada (Vitest, Jest, Playwright, pytest) e o binário está instalado. `run: false` não executa. Se o binário não estiver instalado, o arquivo fica gravado e a resposta diz isso.
+
+Geradores que gravam e podem executar: `generate_unit_test`, `generate_integration_test`, `generate_api_test`, `generate_e2e_test` (Playwright), `generate_property_based_test`, `generate_fuzz_test`, `generate_snapshot_test`, `generate_golden_master_test`, `generate_i18n_test` e `generate_llm_prompt_test`. Java, RSpec e Selenium gravam e não executam. `generate_mobile_test` grava e não executa; sem `appium` em `node_modules`, diz que não há runner. `generate_gherkin_scenario` grava `*.feature` e executa só se `cucumber` já está em `node_modules`. `generate_synthetic_data` grava JSON em `tests/fixtures/`.
+
+`suggest_accessibility_audit` grava um spec Playwright com axe e só executa se `baseUrl` for localhost ou 127.0.0.1.
+
+SAST, SCA, auth 401/403, k6 em localhost, mutação e pact rodam se a ferramenta já está instalada; produção, chaos e restore não rodam.
+
+`suggest_performance_test_plan` grava `perf/carga.k6.js` e executa `k6 run` só quando o script usa localhost ou 127.0.0.1 e o binário está no PATH. Host externo, JMeter e Gatling não executam. `generate_smoke_test_prod`, `setup_canary_release`, `setup_chaos_experiment`, `setup_synthetic_monitoring` e `setup_disaster_recovery_test` continuam sem execução: sem kubectl, sem HTTP de produção e sem restore. O canário segue Flagger ou Argo conforme o repositório; chaos é Chaos Mesh e não é aplicado.
+
+Segurança de tela e de API roda no localhost (cabeçalho, cookie, CSRF, escape, 401/403, CORS, dono da rota), sem injeção e sem produção. `suggest_compliance_checklist` continua roteiro, sem scanner.
+
+SAST grava o config e executa eslint, bandit ou gosec se o binário já está no projeto ou no PATH. SCA grava Dependabot ou `.snyk` e executa `npm audit` ou `pip-audit` nas mesmas condições. Mutação roda o Stryker local quando `@stryker-mutator/core` está em `node_modules`. Pact roda o `*.pact.test.ts` no Vitest ou Jest. Regressão visual roda `e2e/visual.spec.ts` no Playwright só em localhost, sem Percy nem Chromatic na rede. Sem o binário, o arquivo fica gravado e a resposta diz isso.
+
+WireMock, seed, planos, relatórios e quarentena gravam o arquivo descrito, sem sobrescrever o que já existe. A quarentena não apaga nem move teste.
+
+Análise lê o disco quando o texto não vem: cobertura (`coverage/lcov.info`, `lcov.info`, `coverage/coverage-final.json`), instabilidade (JUnit, Allure ou log), relatório de mutação já gravado (Stryker, PIT ou mutmut), impacto e paralelização a partir dos testes do projeto.
+
+Calculadoras não gravam: valor limite, partição de equivalência, tabela de decisão, transição de estado, pairwise, densidade de defeitos, MTTR, custo da qualidade, ROI de automação, desenho de teste A/B e priorização por risco.
+
+A gravação recusa manifesto e lock (`package.json`, `pom.xml` e equivalentes), arquivo cujo nome começa com `.env`, `node_modules` e `.git`.
 
 | Tool | Exemplo de pedido |
 | --- | --- |
@@ -277,12 +304,11 @@ A raiz sai, nesta ordem, de `projectRoot`, de `E2E_PROJECT_ROOT`, das pastas que
 | `run_project_tests` | "Roda o Vitest deste arquivo." |
 | `diagnose_test_report` | "Diagnostica o `junit.xml` do CI." |
 
-`generate_unit_test` e `generate_e2e_test` aceitam `writeToProject` e `run`. Sem os dois, o comportamento continua sendo devolver o código no chat.
-
 ## Contagem
 
 | Categoria | Tools |
 | --- | --- |
+| Mapa do arquivo editado | 1 |
 | Geração por camada | 5 |
 | Design de casos | 5 |
 | Não funcionais | 4 |
@@ -302,7 +328,7 @@ A raiz sai, nesta ordem, de `projectRoot`, de `E2E_PROJECT_ROOT`, das pastas que
 | Contrato dirigido pelo consumidor | 1 |
 | Economia | 2 |
 | Ciclo fechado | 4 |
-| **Total** | **63** |
+| **Total** | **64** |
 
-Resources: 32. Prompts: 8.
+Resources: 33, inclusive `e2e://map`. Prompts: 8.
 

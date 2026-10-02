@@ -84,7 +84,7 @@ export function registerEconomicsTools(server: McpServer): void {
     server,
     "calculate_cost_of_quality",
     "Custo da qualidade",
-    "Estima o custo relativo de defeitos em dev, QA, staging e produção com pesos editáveis.",
+    "Custo calcula e não grava o custo relativo de defeitos em dev, QA, staging e produção.",
     {
       defects: z
         .object({
@@ -110,7 +110,7 @@ export function registerEconomicsTools(server: McpServer): void {
     server,
     "suggest_automation_roi",
     "ROI de automação",
-    "Diz se vale automatizar um caso a partir da frequência, do tempo manual, do custo de escrita e da estabilidade.",
+    "Retorno calcula e não grava se vale automatizar um caso a partir da frequência, do tempo manual e da estabilidade.",
     {
       name: z.string(),
       runsPerMonth: z.number().positive(),

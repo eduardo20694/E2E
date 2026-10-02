@@ -6,6 +6,7 @@ import { registerCiTools } from "./ci-cd-optimization.js";
 import { registerContractAdvancedTools } from "./contract-testing-advanced.js";
 import { registerDesignTools } from "./design-techniques.js";
 import { registerDisasterTools } from "./disaster-recovery.js";
+import { registerEditMapTools } from "./edit-map.js";
 import { registerE2eTools } from "./e2e.js";
 import { registerExecutionTools } from "./execution.js";
 import { registerEconomicsTools } from "./quality-economics.js";
@@ -27,6 +28,7 @@ import { registerUnitTools } from "./unit.js";
 import { registerVisualTools } from "./visual-regression.js";
 
 export const TOOL_NAMES = [
+  "map_tests_for_edit",
   "generate_unit_test",
   "generate_integration_test",
   "generate_e2e_test",
@@ -93,6 +95,7 @@ export const TOOL_NAMES = [
 ] as const;
 
 export function registerAllTools(server: McpServer): void {
+  registerEditMapTools(server);
   registerUnitTools(server);
   registerIntegrationTools(server);
   registerE2eTools(server);

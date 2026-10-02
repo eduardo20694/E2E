@@ -26,11 +26,16 @@ describe("servidor MCP E2E", () => {
     const names = tools.tools.map((tool) => tool.name).sort();
     expect(names).toEqual([...TOOL_NAMES].sort());
 
+    expect(client.getInstructions()).toContain("map_tests_for_edit");
+
     const resources = await client.listResources();
-    expect(resources.resources).toHaveLength(32);
+    expect(resources.resources).toHaveLength(33);
     expect(resources.resources.map((resource) => resource.uri)).toContain(
       "e2e://knowledge/shift-right",
     );
+    expect(resources.resources.map((resource) => resource.uri)).toContain("e2e://map");
+    const mapResource = resources.resources.find((resource) => resource.uri === "e2e://map");
+    expect(mapResource?.title).toBe("Mapa de tools por arquivo editado");
 
     const article = await client.readResource({ uri: "e2e://knowledge/bdd" });
     expect(article.contents[0]).toMatchObject({ mimeType: "text/markdown" });

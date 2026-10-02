@@ -18,7 +18,11 @@ const samples = {
     }),
   integration: () =>
     generateIntegrationTest({ description: "API e postgres gravam o pedido", database: "postgres" }),
-  e2e: () => generateE2eTest({ userFlow: "Entrar e ver o pedido." }),
+  e2e: () =>
+    generateE2eTest({
+      sourceCode: "export default function Checkout(){ return <button>Pagar</button>; }",
+      filePath: "src/pages/Checkout.tsx",
+    }),
   api: () => generateApiTest({ specification: "GET /orders/{id}" }),
   design: () => boundaryValueAnalysis({ rule: "quantidade entre 1 e 10" }),
   performance: () => suggestPerformanceTestPlan({ target: "http://127.0.0.1:3000/orders" }),

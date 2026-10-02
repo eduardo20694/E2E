@@ -14,21 +14,48 @@ const MARKERS = [
   "Cargo.toml",
 ];
 
-const ALLOWED_EXTENSIONS = new Set([
-  ".ts",
-  ".tsx",
-  ".js",
-  ".jsx",
-  ".mjs",
-  ".cjs",
-  ".py",
-  ".java",
-  ".rb",
-  ".go",
-  ".feature",
-  ".xml",
-  ".json",
+/** Manifesto, lock, compilação e segredo. Recusados mesmo com overwrite. */
+const BLOCKED_BASENAMES = new Set([
+  "package.json",
+  "package-lock.json",
+  "pnpm-lock.yaml",
+  "yarn.lock",
+  "pom.xml",
+  "build.gradle",
+  "build.gradle.kts",
+  "settings.gradle",
+  "go.mod",
+  "go.sum",
+  "cargo.toml",
+  "cargo.lock",
+  "composer.json",
+  "composer.lock",
+  "gemfile",
+  "gemfile.lock",
+  "pyproject.toml",
+  "tsconfig.json",
+  "jsconfig.json",
 ]);
+
+/** Config novo de SAST, mutação ou regressão visual. Não inclui manifesto já bloqueado. */
+const EXTRA_FILES = new Set([
+  ".eslintrc.security.json",
+  "bandit.yaml",
+  "spotbugs-security.xml",
+  "gosec.json",
+  ".rubocop.security.yml",
+  "stryker.config.json",
+  "mutmut.toml",
+  "pitest-config.xml",
+  ".percy.yml",
+  "chromatic.config.json",
+  "applitools.config.json",
+  ".snyk",
+  "checkly.config.ts",
+]);
+
+const TEST_FILE =
+  /^(?:.+\.test\.(?:ts|tsx|js|jsx|mjs|cjs)|.+\.spec\.(?:ts|tsx|js|jsx|mjs|cjs)|test_.+\.py|.+_test\.py|.+Test\.java|.+_spec\.rb|.+_test\.rb|.+_test\.go|.+\.feature)$/;
 
 export type RootVia = "argumento" | "env" | "cursor" | "arquivo" | "nenhuma";
 
@@ -108,20 +135,60 @@ export function readProjectFile(projectRoot: string, filePath: string): string {
 
 export function writeProjectFile(projectRoot: string, relativePath: string, contents: string, overwrite = false): string {
   if (contents.length > 200_000) throw new Error("Conteúdo grande demais para gravar (limite 200 KB).");
-  const extension = path.extname(relativePath).toLowerCase();
-  if (!ALLOWED_EXTENSIONS.has(extension)) {
-    throw new Error(`Extensão não permitida para teste: ${extension || "(nenhuma)"}`);
-  }
-  const destination = resolveInside(projectRoot, relativePath);
+  const relative = normalizeRelative(relativePath);
+  assertWritable(relative);
+  const destination = resolveInside(projectRoot, relative);
   if (destination.includes(`${path.sep}node_modules${path.sep}`) || destination.includes(`${path.sep}.git${path.sep}`)) {
     throw new Error("Não gravo arquivo em node_modules ou .git.");
   }
+  assertNotBlocked(path.basename(destination));
   if (fs.existsSync(destination) && !overwrite) {
     throw new Error(`Arquivo já existe: ${destination}. Passe overwrite para substituir.`);
   }
   fs.mkdirSync(path.dirname(destination), { recursive: true });
   fs.writeFileSync(destination, contents.endsWith("\n") ? contents : `${contents}\n`, "utf8");
   return destination;
+}
+
+function normalizeRelative(relativePath: string): string {
+  const normalized = path.posix.normalize(relativePath.replace(/\\/g, "/")).replace(/^\.\//, "");
+  if (!normalized || normalized === "." || normalized.startsWith("../") || normalized === ".." || path.posix.isAbsolute(normalized)) {
+    throw new Error("Caminho fora da raiz do projeto.");
+  }
+  return normalized;
+}
+
+function assertNotBlocked(fileName: string): void {
+  const base = path.posix.basename(fileName.replace(/\\/g, "/"));
+  const lower = base.toLowerCase();
+  if (lower.startsWith(".env") || BLOCKED_BASENAMES.has(lower)) {
+    throw new Error(
+      `Recuso gravar \`${base}\`: manifesto, lock, configuração de compilação ou arquivo de segredo não entra na gravação.`,
+    );
+  }
+}
+
+function assertWritable(relative: string): void {
+  assertNotBlocked(relative);
+  if (!isAllowedRelative(relative)) {
+    throw new Error(
+      `Caminho fora da lista permitida: \`${relative}\`. Posso gravar teste (*.test.ts, *.spec.ts, test_*.py, *Test.java, *.feature), markdown em docs/qa/, JSON em tests/fixtures/ ou wiremock/, YAML em .github/, deploy/e2e/ ou perf/, script de carga em perf/*.k6.js ou *.k6.ts, e o config novo de SAST ou de regressão visual.`,
+    );
+  }
+}
+
+function isAllowedRelative(normalized: string): boolean {
+  const base = path.posix.basename(normalized);
+  if (TEST_FILE.test(base) || EXTRA_FILES.has(normalized)) return true;
+  if (normalized.startsWith("docs/qa/") && normalized.endsWith(".md")) return true;
+  if ((normalized.startsWith("tests/fixtures/") || normalized.startsWith("wiremock/")) && normalized.endsWith(".json")) return true;
+  if (isYamlRoot(normalized) && /\.ya?ml$/i.test(base)) return true;
+  if (normalized.startsWith("perf/") && /\.k6\.(js|ts)$/i.test(base)) return true;
+  return false;
+}
+
+function isYamlRoot(normalized: string): boolean {
+  return normalized.startsWith(".github/") || normalized.startsWith("deploy/e2e/") || normalized.startsWith("perf/");
 }
 
 /** Garante que o alvo fica dentro da raiz, mesmo com `..` no caminho. */

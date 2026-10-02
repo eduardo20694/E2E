@@ -6,7 +6,8 @@ import { citeKnowledge } from "../lib/knowledge.js";
 import { pyramidBalance, scanPyramid, type PyramidCounts } from "../lib/pyramid.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { deliver, resolveToolRoot, type LoopFlags } from "./loop.js";
 
 export interface PyramidInput extends ProjectContextInput {
   counts?: { unit: number; integration: number; e2e: number };
@@ -184,7 +185,7 @@ export function registerStrategyTools(server: McpServer): void {
     server,
     "suggest_test_pyramid_balance",
     "Equilíbrio da pirâmide",
-    "Conta arquivos de teste por camada no projeto, ou usa contagens informadas, e sugere rebalanceamento.",
+    "Pirâmide lê arquivos de teste no disco, ou usa contagens informadas, e calcula sem gravar o rebalanceamento das camadas.",
     {
       projectRoot: z.string().optional(),
       counts: z
@@ -200,7 +201,7 @@ export function registerStrategyTools(server: McpServer): void {
     server,
     "risk_based_prioritization",
     "Priorização por risco",
-    "Ordena funcionalidades pelo produto de probabilidade e impacto e sugere a profundidade de teste.",
+    "Risco calcula e não grava a ordem das funcionalidades pelo produto de probabilidade e impacto.",
     {
       features: z
         .array(
@@ -221,28 +222,58 @@ export function registerStrategyTools(server: McpServer): void {
     server,
     "shift_left_right_recommendations",
     "Shift-left e shift-right",
-    "Recomenda o que testar antes do deploy e o que observar em produção. Deixa explícito que uma faixa não substitui a outra.",
+    "Faixas grava e não executa `docs/qa/shift-left-right.md` com o que testar antes do deploy e o que observar em produção; uma faixa não substitui a outra.",
     {
       context: z.string().describe("Projeto ou mudança em uma frase."),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => shiftLeftRightRecommendations(args as unknown as ShiftInput),
+    async (args) => {
+      const input = args as unknown as ShiftInput & LoopFlags;
+      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+      const ready = { ...input, projectRoot: root ?? input.projectRoot };
+      const result = shiftLeftRightRecommendations(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "docs/qa/shift-left-right.md",
+        contents: result.content[0]?.text ?? "",
+      });
+    },
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "environment_strategy_advisor",
     "Estratégia por ambiente",
-    "Diz o que testar em dev, teste, staging e produção, e se cada camada é mock, ambiente real isolado ou produção real.",
+    "Ambientes grava e não executa `docs/qa/ambientes.md` dizendo o que é mock, ambiente real isolado ou produção real.",
     {
       pipeline: z.string().optional().describe("Pipeline, por exemplo dev → teste → staging → produção."),
       context: z.string().optional().describe("Produto ou mudança."),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => environmentStrategyAdvisor(args as unknown as EnvironmentInput),
+    async (args) => {
+      const input = args as unknown as EnvironmentInput & LoopFlags;
+      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+      const ready = { ...input, projectRoot: root ?? input.projectRoot };
+      const result = environmentStrategyAdvisor(ready);
+      if (result.isError) return result;
+      return deliver({
+        server,
+        input: ready,
+        preface: result,
+        relativePath: "docs/qa/ambientes.md",
+        contents: result.content[0]?.text ?? "",
+      });
+    },
+    { readOnly: false },
   );
 }

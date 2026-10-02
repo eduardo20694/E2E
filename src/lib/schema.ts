@@ -23,3 +23,18 @@ export interface ProjectContextInput {
   filePath?: string;
   sourceCode?: string;
 }
+
+export const writeShape = {
+  writeToProject: z
+    .boolean()
+    .optional()
+    .describe("false não grava. Omitido, grava quando a raiz do projeto existe."),
+  overwrite: z.boolean().optional().describe("true substitui o arquivo se ele já existir."),
+};
+
+export const runShape = {
+  run: z
+    .boolean()
+    .optional()
+    .describe("false não executa. Omitido, executa só Vitest, Jest, Playwright ou pytest, se o binário estiver instalado."),
+};

@@ -24,6 +24,39 @@ const SKIP = new Set([
 
 const TEST_FILE = /\.(test|spec)\.(tsx?|jsx?|py|java|rb|go)$|(_test\.go|Test\.php|\.feature)$/i;
 
+const BROAD_TEST =
+  /(?:^|\/)(?:[^/]+\.test\.(?:tsx?|jsx?|mjs|cjs)|[^/]+\.spec\.(?:tsx?|jsx?|mjs|cjs)|test_[^/]+\.py|[^/]+_test\.py|[^/]+Test\.java|[^/]+_spec\.rb|[^/]+_test\.rb|[^/]+_test\.go|[^/]+\.feature)$/i;
+
+/** Lista caminhos relativos de teste, além da amostra de 20 da pirâmide. */
+export function listTestFiles(projectRoot: string, maxDepth = 8): string[] {
+  const root = path.resolve(projectRoot);
+  const found: string[] = [];
+  if (!fs.existsSync(root)) throw new Error(`Diretório inexistente: ${root}`);
+  collect(root, root, 0, maxDepth, found);
+  return found;
+}
+
+function collect(root: string, current: string, depth: number, maxDepth: number, found: string[]): void {
+  if (depth > maxDepth || found.length >= 400) return;
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(current, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (found.length >= 400) return;
+    if (SKIP.has(entry.name) || entry.name.startsWith(".")) continue;
+    const full = path.join(current, entry.name);
+    if (entry.isDirectory()) {
+      collect(root, full, depth + 1, maxDepth, found);
+      continue;
+    }
+    const relative = path.relative(root, full).split(path.sep).join("/");
+    if (entry.isFile() && BROAD_TEST.test(relative)) found.push(relative);
+  }
+}
+
 export function scanPyramid(projectRoot: string, maxDepth = 6): PyramidCounts {
   const root = path.resolve(projectRoot);
   const counts: PyramidCounts = {

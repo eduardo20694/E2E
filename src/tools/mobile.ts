@@ -6,7 +6,9 @@ import { codeBlock, doc, splitSteps } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { appiumInstalled } from "../lib/runner.js";
+import { writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { deliver, hydrateSource, type LoopFlags } from "./loop.js";
 
 export interface GenerateMobileTestInput extends ProjectContextInput {
   flow: string;
@@ -51,19 +53,48 @@ export function generateMobileTest(input: GenerateMobileTestInput): ToolTextResu
   );
 }
 
+export async function handleGenerateMobileTest(input: GenerateMobileTestInput & LoopFlags, server?: McpServer): Promise<ToolTextResult> {
+  const hydrated = await hydrateSource(server, input);
+  if ("isError" in hydrated && hydrated.isError) return hydrated;
+  const ready = hydrated as GenerateMobileTestInput & LoopFlags;
+  const result = generateMobileTest(ready);
+  if (result.isError) return result;
+  const language = inferLanguage(ready.sourceCode, ready.filePath);
+  const rendered = renderMobileTest({
+    flow: ready.flow,
+    platform: ready.platform ?? "android",
+    steps: splitSteps(ready.flow),
+    language: language === "python" ? "python" : "ts",
+  });
+  const hasAppium = Boolean(ready.projectRoot && appiumInstalled(ready.projectRoot));
+  return deliver({
+    server,
+    input: ready,
+    preface: result,
+    relativePath: rendered.fileName,
+    contents: rendered.code,
+    neverRun: true,
+    skippedNote: hasAppium
+      ? "Não foi executado. appium está em node_modules, mas não há comando fechado para o spec sem subir servidor."
+      : "Não foi executado. Não há runner: appium não está instalado em node_modules.",
+  });
+}
+
 export function registerMobileTools(server: McpServer): void {
   registerTool(
     server,
     "generate_mobile_test",
     "Gerar teste mobile",
-    "Gera um teste Appium (WebdriverIO ou cliente Python) para um fluxo Android, iOS ou ambos.",
+    "Mobile grava e não executa o fluxo Appium (`mobile.spec.ts` ou `test_mobile.py`); sem `appium` em node_modules, diz que não há runner.",
     {
       flow: z.string().describe("Fluxo no aplicativo, em linguagem natural."),
       platform: z.enum(["android", "ios", "both"]).optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
     },
-    (args) => generateMobileTest(args as unknown as GenerateMobileTestInput),
+    (args) => handleGenerateMobileTest(args as unknown as GenerateMobileTestInput & LoopFlags, server),
+    { readOnly: false },
   );
 }

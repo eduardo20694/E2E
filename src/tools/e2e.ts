@@ -7,16 +7,19 @@ import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
 import type { ProjectContextInput } from "../lib/schema.js";
-import { cursorRoots, resolveProjectRoot } from "../lib/workspace.js";
+import { runShape, writeShape } from "../lib/schema.js";
+import { extractUi, routeFromPage } from "../lib/web.js";
 import { persistGenerated } from "./execution.js";
+import { hydrateSource, shouldRun, shouldWrite } from "./loop.js";
 import type { TestRunner } from "../lib/runner.js";
 
 export interface GenerateE2eTestInput extends ProjectContextInput {
-  userFlow: string;
+  userFlow?: string;
   framework?: E2eFramework;
   baseUrl?: string;
   writeToProject?: boolean;
   run?: boolean;
+  overwrite?: boolean;
 }
 
 export interface BuiltE2eTest {
@@ -26,29 +29,58 @@ export interface BuiltE2eTest {
   framework?: E2eFramework;
 }
 
+function outsideBase(baseUrl?: string): boolean {
+  const raw = baseUrl?.trim();
+  if (!raw) return false;
+  try {
+    const host = new URL(raw).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return host !== "127.0.0.1" && host !== "localhost" && host !== "::1";
+  } catch {
+    return true;
+  }
+}
+
 export function buildE2eTest(input: GenerateE2eTestInput): BuiltE2eTest {
-  if (!input.userFlow?.trim()) {
-    return { result: errorResult("generate_e2e_test exige userFlow com o caminho do usuário.") };
+  const controls = extractUi(input.sourceCode ?? "");
+  const route = input.filePath ? routeFromPage(input.filePath) : undefined;
+  const steps = input.userFlow?.trim() ? splitSteps(input.userFlow) : [];
+  if (controls.length === 0 && steps.length === 0) {
+    return {
+      result: errorResult(
+        "Passe o arquivo da tela (filePath ou sourceCode) com os controles, ou um userFlow. Sem controle e sem fluxo não há o que exercitar.",
+      ),
+    };
+  }
+  if (controls.length === 0) {
+    return {
+      result: errorResult(
+        "Passe o arquivo da tela (filePath ou sourceCode) com os controles. Só o userFlow, sem o arquivo da tela, não mostra o que a página precisa.",
+      ),
+    };
   }
 
   const stack = detectStack(input.projectRoot);
   const choice = chooseE2eFramework(input.framework, stack);
-  const steps = splitSteps(input.userFlow);
+  const fromScreen = controls.length > 0;
   const rendered = renderE2eTest({
     framework: choice.framework,
     steps,
     baseUrl: input.baseUrl ?? "http://127.0.0.1:3000",
-    title: steps[0] ?? "fluxo principal",
+    title: steps[0] ?? (route ? `tela ${route}` : "fluxo principal"),
+    controls,
+    route,
+    sourceCode: input.sourceCode,
+    filePath: input.filePath,
   });
 
   return {
     result: textResult(
     doc([
-      `# Teste E2E — ${choice.framework} em staging`,
-      "Isto roda em **staging**, com dado fake. Não é mock de browser e não é produção.",
-      "## Dados",
-      "- Setup cria usuário e massa deste teste. Teardown apaga os dois.",
-      "- Não reutilize login compartilhado nem pedido deixado pela execução anterior.",
+      `# Teste E2E — ${choice.framework} local`,
+      "Teste local. A página é HTML criado dos controles do arquivo. Os retornos JSON são criados no teste. Sem app no ar e sem rede externa.",
+      outsideBase(input.baseUrl)
+        ? "> A URL de fora foi ignorada. O teste abre só `http://127.0.0.1:3000`."
+        : undefined,
       choice.warning ? `> ${choice.warning}` : undefined,
       stack.e2eFrameworks.length
         ? `Framework detectado no projeto: ${stack.e2eFrameworks.join(", ")}.`
@@ -63,8 +95,8 @@ export function buildE2eTest(input: GenerateE2eTestInput): BuiltE2eTest {
       "- Um fluxo por teste, no caminho de maior risco.",
       "- Localizadores por papel acessível ou data-testid.",
       "- Espere estado, não um sleep fixo.",
-      input.sourceCode
-        ? "O código aberto foi considerado como contexto do fluxo; os passos continuam vindo de userFlow."
+      fromScreen
+        ? `O teste usa os controles e a rota do arquivo${route ? ` (\`${route}\`)` : ""}.${steps.length ? " O userFlow entra junto com esses controles." : ""}`
         : undefined,
       citeKnowledge(["e2e-testing", "black-white-gray-box"]),
     ]),
@@ -84,35 +116,37 @@ export function registerE2eTools(server: McpServer): void {
     server,
     "generate_e2e_test",
     "Gerar teste E2E",
-    "Transforma um fluxo de usuário em teste Cypress, Playwright ou Selenium. Usa o framework já presente no projeto quando framework não é informado.",
+    "Teste local. A página é HTML criado dos controles do arquivo. Os retornos JSON são criados no teste. Sem app no ar e sem rede externa. Grava e executa o Playwright (`*.spec.ts`) quando esse runner está na lista fechada; Cypress e Selenium são gravados e ficam sem execução.",
     {
-      userFlow: z.string().describe("Fluxo em linguagem natural, um passo por frase ou linha."),
+      userFlow: z.string().optional().describe("Fluxo em linguagem natural. Se o arquivo da tela foi passado, os controles e a rota dele entram no teste."),
       framework: z.enum(["playwright", "cypress", "selenium"]).optional(),
-      baseUrl: z.string().optional().describe("URL da aplicação sob teste."),
+      baseUrl: z.string().optional().describe("Ignorada quando o host é de fora. O teste abre só http://127.0.0.1:3000."),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
-      writeToProject: z.boolean().optional().describe("Grava o spec em e2e/ dentro da raiz."),
-      run: z.boolean().optional().describe("Executa com Playwright quando esse for o framework."),
+      ...writeShape,
+      ...runShape,
     },
     async (args) => {
-      const input = args as unknown as GenerateE2eTestInput;
-      const resolved = await resolveProjectRoot({
-        explicit: input.projectRoot,
-        filePath: input.filePath,
-        listRoots: () => cursorRoots(server),
-      });
-      const built = buildE2eTest({ ...input, projectRoot: resolved.root ?? input.projectRoot });
-      if (built.result.isError || (!input.writeToProject && !input.run) || !built.code || !built.fileName) return built.result;
+      const hydrated = await hydrateSource(server, args as unknown as GenerateE2eTestInput);
+      if ("isError" in hydrated && hydrated.isError) return hydrated;
+      const ready = hydrated as GenerateE2eTestInput;
+      const built = buildE2eTest(ready);
+      if (built.result.isError || !built.code || !built.fileName) return built.result;
+      const runner = built.framework === "playwright" ? ("playwright" satisfies TestRunner) : undefined;
+      const write = shouldWrite(ready.writeToProject, ready.projectRoot);
+      const run = shouldRun(ready.run, Boolean(runner), ready.projectRoot);
+      if (!write && !run) return built.result;
       return persistGenerated({
-        projectRoot: resolved.root ?? input.projectRoot,
+        projectRoot: ready.projectRoot,
         fileName: built.fileName,
         code: built.code,
         folder: "e2e",
-        runner: built.framework === "playwright" ? ("playwright" satisfies TestRunner) : undefined,
-        write: input.writeToProject,
-        run: input.run,
-        preface: built.result.content[0]?.text ?? "",
+        runner,
+        write,
+        run,
+        overwrite: ready.overwrite,
+        preface: [built.result.content[0]?.text ?? "", run ? undefined : "Não foi executado."].filter(Boolean).join("\n\n"),
       });
     },
     { readOnly: false },

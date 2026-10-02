@@ -5,12 +5,16 @@ import { analyzeFlakiness } from "../lib/flakiness.js";
 import { doc, markdownTable } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
+import { readFirstExisting, readSuiteEvidence } from "../lib/report.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
+import { resolveToolRoot } from "./loop.js";
 
 export interface FlakinessInput {
-  logs: string;
+  logs?: string;
   history?: string;
   sourceCode?: string;
+  projectRoot?: string;
+  filePath?: string;
 }
 
 export function flakinessAnalyzer(input: FlakinessInput): ToolTextResult {
@@ -40,9 +44,10 @@ export function flakinessAnalyzer(input: FlakinessInput): ToolTextResult {
 }
 
 export interface CoverageAdvisorInput {
-  report: string;
+  report?: string;
   sourceCode?: string;
   filePath?: string;
+  projectRoot?: string;
 }
 
 export function codeCoverageAdvisor(input: CoverageAdvisorInput): ToolTextResult {
@@ -170,38 +175,65 @@ function roundMetric(value: number): string {
   return String(Math.round(value * 10) / 10);
 }
 
+export async function handleFlakinessAnalyzer(input: FlakinessInput, server?: McpServer): Promise<ToolTextResult> {
+  let logs = input.logs;
+  let history = input.history;
+  const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+  if (!logs?.trim() && !history?.trim() && root) {
+    const found = readSuiteEvidence(root);
+    if (found) {
+      logs = found.text;
+      history = history ?? `Lido de ${found.path}`;
+    }
+  }
+  return flakinessAnalyzer({ ...input, logs: logs ?? "", history });
+}
+
+export async function handleCodeCoverageAdvisor(input: CoverageAdvisorInput, server?: McpServer): Promise<ToolTextResult> {
+  let report = input.report;
+  const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
+  if (!report?.trim() && root) {
+    const found = readFirstExisting(root, ["coverage/lcov.info", "lcov.info", "coverage/coverage-final.json"]);
+    if (found) report = found.text;
+  }
+  return codeCoverageAdvisor({ ...input, report: report ?? "" });
+}
+
 export function registerMetricsTools(server: McpServer): void {
   registerTool(
     server,
     "flakiness_analyzer",
     "Analisar instabilidade",
-    "Lê logs ou histórico de execução e aponta padrões de teste instável: tempo, seletor, dados, rede, relógio, ordem e retry.",
+    "Instabilidade lê arquivo do disco (JUnit, Allure ou log) e aponta tempo, seletor, dados, rede, relógio, ordem e retry, sem gravar.",
     {
-      logs: z.string().optional().describe("Log ou saída da execução."),
+      logs: z.string().optional().describe("Log ou saída da execução. Se vazio, lê JUnit, Allure ou um log na raiz."),
       history: z.string().optional().describe("Histórico resumido de passes e falhas."),
       sourceCode: z.string().optional(),
+      projectRoot: z.string().optional(),
+      filePath: z.string().optional(),
     },
-    (args) => flakinessAnalyzer(args as unknown as FlakinessInput),
+    (args) => handleFlakinessAnalyzer(args as unknown as FlakinessInput, server),
   );
 
   registerTool(
     server,
     "code_coverage_advisor",
     "Aconselhar cobertura",
-    "Lê um relatório de cobertura e aponta lacunas de risco, não só o percentual.",
+    "Cobertura lê arquivo do disco (`coverage/lcov.info` ou `coverage-final.json`) e aponta lacunas de risco, sem gravar.",
     {
-      report: z.string().describe("LCOV, JSON ou texto com arquivos e percentuais."),
+      report: z.string().optional().describe("LCOV, JSON ou texto. Se vazio, lê coverage/lcov.info, lcov.info ou coverage/coverage-final.json."),
       sourceCode: z.string().optional(),
       filePath: z.string().optional(),
+      projectRoot: z.string().optional(),
     },
-    (args) => codeCoverageAdvisor(args as unknown as CoverageAdvisorInput),
+    (args) => handleCodeCoverageAdvisor(args as unknown as CoverageAdvisorInput, server),
   );
 
   registerTool(
     server,
     "defect_density_report",
     "Densidade de defeitos",
-    "Calcula defeitos pelo tamanho informado (KLOC, história ou mudança) e diz como ler o número.",
+    "Densidade calcula e não grava os defeitos pelo tamanho informado (KLOC, história ou mudança).",
     {
       defects: z.number(),
       size: z.number().positive(),
@@ -215,7 +247,7 @@ export function registerMetricsTools(server: McpServer): void {
     server,
     "mttr_report",
     "MTTR",
-    "Calcula o tempo médio até restaurar a partir dos horários de início e de restauração dos incidentes.",
+    "Restauração calcula e não grava o tempo médio até restaurar a partir dos horários dos incidentes.",
     {
       incidents: z
         .array(

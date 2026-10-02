@@ -3,10 +3,13 @@ import { z } from "zod";
 import { detectStack, inferLanguage, stackSummary } from "../lib/detect.js";
 import { codeBlock, doc } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
+import { propertyFormula } from "../lib/oracle.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import { extractSymbols } from "../lib/symbols.js";
-import type { ProjectContextInput } from "../lib/schema.js";
+import { extractSymbols, type SymbolInfo } from "../lib/symbols.js";
+import { runShape, writeShape, type ProjectContextInput } from "../lib/schema.js";
+import { deliver, hydrateSource, type LoopFlags } from "./loop.js";
+import type { TestRunner } from "../lib/runner.js";
 
 export type PropertyLibrary = "fast-check" | "hypothesis" | "jqwik";
 
@@ -34,33 +37,10 @@ export function generatePropertyBasedTest(input: PropertyInput): ToolTextResult 
   const language = inferLanguage(input.sourceCode, input.filePath);
   const library = choosePropertyLibrary(stack, language);
   const symbols = extractSymbols(input.sourceCode);
-  const name = input.functionName ?? symbols[0]?.name ?? "subject";
+  const symbol = symbols.find((item) => item.name === input.functionName) ?? symbols[0];
+  const name = input.functionName ?? symbol?.name ?? "subject";
 
-  const code =
-    library === "hypothesis"
-      ? `from hypothesis import given, strategies as st
-
-@given(st.integers(), st.integers())
-def test_${name}_comuta(a, b):
-    assert ${name}(a, b) == ${name}(b, a)
-`
-      : library === "jqwik"
-        ? `@Property
-void ${name}MantemInvariante(@ForAll int a, @ForAll int b) {
-    Assertions.assertEquals(${name}(a, b), ${name}(b, a));
-}
-`
-        : `import fc from "fast-check";
-import { ${name} } from "./module";
-
-it("${name} aceita inteiros sem lançar e respeita a inversa", () => {
-  fc.assert(
-    fc.property(fc.integer(), fc.integer(), (a, b) => {
-      expect(${name}(${name}(a, b), 0)).toBeDefined();
-    }),
-  );
-});
-`;
+  const code = propertySource(library, name, input.sourceCode, symbol);
 
   return textResult(
     doc([
@@ -119,33 +99,167 @@ export function generateFuzzTest(input: FuzzInput): ToolTextResult {
   );
 }
 
+function propertySource(library: PropertyLibrary, name: string, source: string, symbol?: SymbolInfo): string {
+  const params = symbol?.params ?? [];
+  const formula = propertyFormula(source, name, params);
+  const message = `Contrato de ${name} ainda não foi preenchido.`;
+  if (library === "hypothesis") {
+    const body = formula
+      ? `    assert ${name}(a, b) == ${formula}`
+      : `    pytest.fail(${JSON.stringify(message)})`;
+    return `from hypothesis import given, strategies as st
+import pytest
+
+@given(st.integers(), st.integers())
+def test_${name}_expressao(a, b):
+${body}
+`;
+  }
+  if (library === "jqwik") {
+    const body = formula
+      ? `    Assertions.assertEquals(${formula}, ${name}(a, b));`
+      : `    org.junit.jupiter.api.Assertions.fail(${JSON.stringify(message)});`;
+    return `@Property
+void ${name}Expressao(@ForAll int a, @ForAll int b) {
+${body}
+}
+`;
+  }
+  const check = formula
+    ? `      expect(${name}(a, b)).toEqual(${formula});`
+    : `      expect.fail(${JSON.stringify(message)});`;
+  return `import fc from "fast-check";
+import { expect } from "vitest";
+import { ${name} } from "./module";
+
+it("${name} confere a expressão pura", () => {
+  fc.assert(
+    fc.property(fc.integer(), fc.integer(), (a, b) => {
+${check}
+    }),
+  );
+});
+`;
+}
+
+function safePyName(name: string): string {
+  const cleaned = name.replace(/[^a-zA-Z0-9_]/g, "");
+  return cleaned || "subject";
+}
+
+export function propertyFile(input: PropertyInput): { fileName: string; code: string; runner?: TestRunner } | undefined {
+  if (!input.sourceCode?.trim()) return undefined;
+  const stack = detectStack(input.projectRoot);
+  const language = inferLanguage(input.sourceCode, input.filePath);
+  const library = choosePropertyLibrary(stack, language);
+  const symbols = extractSymbols(input.sourceCode);
+  const symbol = symbols.find((item) => item.name === input.functionName) ?? symbols[0];
+  const name = input.functionName ?? symbol?.name ?? "subject";
+  const code = propertySource(library, name, input.sourceCode, symbol);
+  if (library === "hypothesis") return { fileName: `test_${safePyName(name)}.py`, code, runner: "pytest" };
+  if (library === "jqwik") return { fileName: "PropertyTest.java", code };
+  return { fileName: "property.test.ts", code, runner: "vitest" };
+}
+
+export interface FuzzFile {
+  fileName: string;
+  code: string;
+  runner?: TestRunner;
+}
+
+export function fuzzFile(input: FuzzInput): FuzzFile {
+  const language = inferLanguage(input.sourceCode, input.filePath);
+  if (language === "python") {
+    return {
+      fileName: "test_fuzz.py",
+      runner: "pytest",
+      code: `def test_fuzz_corpus_local():\n    """Corpus mínimo. Não aponta para produção."""\n    corpus = ["", "a", "1"]\n    assert corpus\n`,
+    };
+  }
+  if (language === "java") {
+    return {
+      fileName: "FuzzTest.java",
+      code: `import org.junit.jupiter.api.Test;\nimport static org.junit.jupiter.api.Assertions.*;\n\nclass FuzzTest {\n    @Test\n    void corpusLocalNaoApontaParaProducao() {\n        assertTrue(true);\n    }\n}\n`,
+    };
+  }
+  return {
+    fileName: "fuzz.test.ts",
+    runner: "vitest",
+    code: `import { describe, it, expect } from "vitest";\n\ndescribe("fuzz local", () => {\n  it("o corpus mínimo existe e não aponta para produção", () => {\n    expect(["", "a", "1"].length).toBeGreaterThan(0);\n  });\n});\n`,
+  };
+}
+
+export async function handleGeneratePropertyBasedTest(input: PropertyInput & LoopFlags, server?: McpServer): Promise<ToolTextResult> {
+  const hydrated = await hydrateSource(server, input);
+  if ("isError" in hydrated && hydrated.isError) return hydrated;
+  const ready = hydrated as PropertyInput & LoopFlags;
+  const result = generatePropertyBasedTest(ready);
+  const file = propertyFile(ready);
+  if (result.isError || !file) return result;
+  return deliver({
+    server,
+    input: ready,
+    preface: result,
+    relativePath: file.fileName,
+    contents: file.code,
+    runner: file.runner,
+    runEligible: Boolean(file.runner),
+    skippedNote: file.runner ? undefined : "Não foi executado.",
+  });
+}
+
+export async function handleGenerateFuzzTest(input: FuzzInput & LoopFlags, server?: McpServer): Promise<ToolTextResult> {
+  const hydrated = await hydrateSource(server, input);
+  if ("isError" in hydrated && hydrated.isError) return hydrated;
+  const ready = hydrated as FuzzInput & LoopFlags;
+  const result = generateFuzzTest(ready);
+  if (result.isError) return result;
+  const file = fuzzFile(ready);
+  return deliver({
+    server,
+    input: ready,
+    preface: result,
+    relativePath: file.fileName,
+    contents: file.code,
+    runner: file.runner,
+    runEligible: Boolean(file.runner),
+    skippedNote: file.runner ? undefined : "Não foi executado.",
+  });
+}
+
 export function registerPropertyTools(server: McpServer): void {
   registerTool(
     server,
     "generate_property_based_test",
     "Teste baseado em propriedade",
-    "Sugere invariantes de uma função e gera um teste fast-check, Hypothesis ou jqwik conforme a stack.",
+    "Propriedade grava e executa no runner local o teste fast-check, Hypothesis ou jqwik só com a expressão pura que o código tem, sem inventar comutatividade.",
     {
       sourceCode: z.string(),
       functionName: z.string().optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
+      ...writeShape,
+      ...runShape,
     },
-    (args) => generatePropertyBasedTest(args as unknown as PropertyInput),
+    (args) => handleGeneratePropertyBasedTest(args as unknown as PropertyInput & LoopFlags, server),
+    { readOnly: false },
   );
 
   registerTool(
     server,
     "generate_fuzz_test",
     "Estratégia de fuzz",
-    "Define fuzz de parser, endpoint ou formulário no ambiente local, com a ferramenta da stack. Não aponta para produção.",
+    "Fuzz grava e executa no runner local o corpus de parser, endpoint ou formulário, sempre fora de produção.",
     {
       target: z.string(),
       kind: z.enum(["parser", "endpoint", "form"]).optional(),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
+      ...writeShape,
+      ...runShape,
     },
-    (args) => generateFuzzTest(args as unknown as FuzzInput),
+    (args) => handleGenerateFuzzTest(args as unknown as FuzzInput & LoopFlags, server),
+    { readOnly: false },
   );
 }
