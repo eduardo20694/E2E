@@ -95,7 +95,7 @@ export function registerBddTools(server: McpServer): void {
     server,
     "generate_gherkin_scenario",
     "Gerar cenário Gherkin",
-    "Gherkin grava `*.feature` e executa com o cucumber de node_modules quando o binário existe; sem cucumber, grava e não executa e diz que não há runner.",
+    "Gherkin grava `*.feature` e executa com o cucumber de node_modules quando o binário existe; sem cucumber, grava e não executa e diz que não há runner. Vitest, Jest, Playwright, ESLint, Stryker e Cucumber só rodam se já estão em `node_modules` (não baixam pacote). k6, npm, Bandit e Gosec são CLI de máquina, procurados no PATH. Não há `npx`.",
     {
       requirement: z.string().describe("Requisito ou história em linguagem natural."),
       title: z.string().optional(),

@@ -1,4 +1,5 @@
 import type { UnitFramework } from "./detect.js";
+import { gapTest, jsImport, opaqueStatement, pytestFail, pytestSkip } from "./markers.js";
 import { analyzeFunction, formatValue, numericParamValues, parseSampleCode, type FunctionContract, type ValueLang } from "./oracle.js";
 import type { SymbolInfo } from "./symbols.js";
 import { moduleNameFromPath } from "./symbols.js";
@@ -116,10 +117,7 @@ function renderComponentTest(
 ): { language: string; fileName: string; code: string } {
   const controls = extractUi(options.sourceCode ?? "");
   const specifier = options.filePath ? `./${moduleNameFromPath(options.filePath)}` : `./${options.moduleName}`;
-  const importLine =
-    framework === "vitest"
-      ? `import { describe, it, expect } from "vitest";`
-      : `import { describe, it, expect } from "@jest/globals";`;
+  const importLine = jsImport(framework, ["describe", "it", "expect"]);
   const componentImport = component.defaultExport
     ? `import ${component.name} from "${specifier}";`
     : `import { ${component.name} } from "${specifier}";`;
@@ -127,7 +125,7 @@ function renderComponentTest(
   const fileRef = options.filePath ?? options.moduleName;
   const body = asserts.length
     ? asserts.join("\n")
-    : `    expect.fail(${JSON.stringify(`Nenhum controle extraído de ${fileRef}.`)});`;
+    : `    ${opaqueStatement(framework, `Nenhum controle extraído de ${fileRef}.`)}`;
   const jsx = options.filePath?.toLowerCase().endsWith(".jsx");
   return {
     language: "tsx",
@@ -187,10 +185,7 @@ function jsTest(
   options: { moduleName: string; filePath?: string; externalImports: string[]; sourceCode?: string },
 ): string {
   const mockFn = framework === "vitest" ? "vi" : "jest";
-  const importLine =
-    framework === "vitest"
-      ? `import { describe, it, expect, vi, beforeEach } from "vitest";`
-      : `import { describe, it, expect, jest, beforeEach } from "@jest/globals";`;
+  const importLine = jsImport(framework, ["describe", "it", "expect", mockFn, "beforeEach"]);
   const specifier = options.filePath
     ? `./${moduleNameFromPath(options.filePath)}`
     : `./${options.moduleName}`;
@@ -216,7 +211,7 @@ function jsTest(
         ]
       : [
           `    it("retorna o resultado esperado para entrada válida", () => {`,
-          `      expect.fail(${JSON.stringify(contractMessage(symbol.name))});`,
+          `      ${opaqueStatement(framework, contractMessage(symbol.name))}`,
           `    });`,
         ];
     const invalid = contract.rejectsMissing
@@ -266,7 +261,7 @@ function pytest(symbols: SymbolInfo[], moduleName: string, source?: string): str
           ]
         : [
             `def test_${symbol.name}_caminho_feliz():`,
-            `    pytest.fail(${JSON.stringify(contractMessage(symbol.name))})`,
+            `    ${pytestFail(contractMessage(symbol.name))}`,
           ];
       const invalid = contract.rejectsMissing
         ? [
@@ -414,8 +409,10 @@ export function renderIntegrationTest(options: {
   sourceCode?: string;
   filePath?: string;
   baseUrl?: string;
+  runner?: "vitest" | "jest";
 }): { language: string; fileName: string; code: string } {
   const db = options.database ?? "postgres";
+  const runner = options.runner === "jest" ? "jest" : "vitest";
   const routes = options.sourceCode ? extractRoutes(options.sourceCode, options.filePath) : [];
   if (routes.length > 0) {
     if (options.language === "python") {
@@ -424,7 +421,7 @@ export function renderIntegrationTest(options: {
     if (options.language === "java") {
       return { language: "java", fileName: "IntegrationTest.java", code: javaRouteIntegration(options, routes, db) };
     }
-    return { language: "ts", fileName: "integration.test.ts", code: tsRouteIntegration(options, routes, db) };
+    return { language: "ts", fileName: "integration.test.ts", code: tsRouteIntegration(options, routes, db, runner) };
   }
   if (options.language === "python") {
     return {
@@ -436,13 +433,15 @@ export function renderIntegrationTest(options: {
   if (options.language === "java") {
     return { language: "java", fileName: "IntegrationTest.java", code: javaIntegration(options, db) };
   }
-  return { language: "ts", fileName: "integration.test.ts", code: tsIntegration(options, db) };
+  return { language: "ts", fileName: "integration.test.ts", code: tsIntegration(options, db, runner) };
 }
 
 function tsIntegration(
   options: { description: string; modules: string[]; useTestcontainers: boolean },
   db: string,
+  runner: "vitest" | "jest",
 ): string {
+  const opaque = opaqueStatement(runner, "Afirme o efeito observável: linha gravada, evento ou HTTP.");
   const container = options.useTestcontainers
     ? `
 import { PostgreSqlContainer } from "@testcontainers/postgresql";
@@ -459,17 +458,18 @@ describe("integração", () => {
   });
 
   it("${escapeQuote(options.description)}", async () => {
-    expect.fail("Afirme o efeito observável: linha gravada, evento ou HTTP.");
+    ${opaque}
   });
 });`
     : `
 describe("integração", () => {
   it("${escapeQuote(options.description)}", async () => {
-    expect.fail("Afirme o efeito observável: linha gravada, evento ou HTTP.");
+    ${opaque}
   });
 });`;
 
-  return `import { describe, it, expect, beforeAll, afterAll } from "vitest";
+  const names = ["describe", "it", "expect", "beforeAll", "afterAll"];
+  return `${jsImport(runner, names)}
 ${container}`;
 }
 
@@ -482,7 +482,7 @@ function pythonIntegration(
 
 def test_integracao():
     """${options.description}"""
-    pytest.fail("Afirme o efeito observável: linha gravada, evento ou HTTP.")
+    ${pytestFail("Afirme o efeito observável: linha gravada, evento ou HTTP.")}
 `;
   }
   return `import pytest
@@ -498,7 +498,7 @@ def test_container_sobe(database_url):
 
 def test_integracao(database_url):
     """${options.description}"""
-    pytest.fail("Afirme o efeito observável: linha gravada, evento ou HTTP.")
+    ${pytestFail("Afirme o efeito observável: linha gravada, evento ou HTTP.")}
 `;
 }
 
@@ -570,9 +570,12 @@ function tsRouteIntegration(
   options: { sourceCode?: string; filePath?: string; baseUrl?: string; useTestcontainers: boolean },
   routes: WebRoute[],
   db: string,
+  runner: "vitest" | "jest",
 ): string {
   const appKind = options.sourceCode ? exportedApp(options.sourceCode) : undefined;
-  const imports = [`import { describe, it, expect${options.useTestcontainers ? ", beforeAll" : ""} } from "vitest";`];
+  const names = ["describe", "it", "expect"];
+  if (options.useTestcontainers) names.push("beforeAll");
+  const imports = [jsImport(runner, names)];
   if (appKind) {
     imports.push(`import request from "supertest";`);
     imports.push(
@@ -717,6 +720,11 @@ interface E2eRenderOptions {
   route?: string;
   sourceCode?: string;
   filePath?: string;
+  mode?: "live" | "component" | "mocked";
+  componentName?: string;
+  componentDefaultExport?: boolean;
+  ctPackage?: string;
+  runner?: "vitest" | "jest";
 }
 
 const E2E_ORIGIN = "http://127.0.0.1:3000";
@@ -724,16 +732,35 @@ const E2E_ORIGIN = "http://127.0.0.1:3000";
 export function renderE2eTest(options: E2eRenderOptions & {
   framework: "playwright" | "cypress" | "selenium";
 }): { language: string; fileName: string; code: string } {
-  if (options.framework === "cypress") return { language: "ts", fileName: "flow.cy.spec.ts", code: cypress(options) };
-  if (options.framework === "selenium") return { language: "ts", fileName: "flow.selenium.spec.ts", code: selenium(options) };
-  return { language: "ts", fileName: "flow.spec.ts", code: playwright(options) };
+  if (options.mode === "component") {
+    return { language: "tsx", fileName: "flow.ct.spec.tsx", code: playwrightComponent(options) };
+  }
+  const mocked = options.mode === "mocked";
+  if (options.framework === "cypress") {
+    return { language: "ts", fileName: mocked ? "flow.mocked.cy.spec.ts" : "flow.cy.spec.ts", code: cypress(options) };
+  }
+  if (options.framework === "selenium") {
+    return {
+      language: "ts",
+      fileName: mocked ? "flow.mocked.selenium.spec.ts" : "flow.selenium.spec.ts",
+      code: selenium(options),
+    };
+  }
+  return { language: "ts", fileName: mocked ? "flow.mocked.spec.ts" : "flow.spec.ts", code: playwright(options) };
+}
+
+function titled(options: E2eRenderOptions): string {
+  const base = escapeQuote(options.title);
+  if (options.mode === "mocked" && !/@mocked\b/.test(base)) return `${base} @mocked`;
+  return base;
 }
 
 function playwright(options: E2eRenderOptions): string {
+  if (options.mode === "live") return playwrightLive(options);
   if (!options.controls?.length) {
     return `import { test, expect } from "@playwright/test";
 
-test("${escapeQuote(options.title)}", async () => {
+test("${titled(options)}", async () => {
   expect(false, "Passe o arquivo da tela.").toBe(true);
 });
 `;
@@ -749,13 +776,14 @@ test("${escapeQuote(options.title)}", async () => {
   const clicks = options.controls
     .map((control) => playwrightClick(control))
     .filter((line): line is string => Boolean(line));
+  const origin = localBase(options.baseUrl);
   const route = options.route && options.route !== "/" ? options.route : "";
   const goto = route
-    ? `  const baseUrl = ${JSON.stringify(E2E_ORIGIN)};\n  await page.goto(baseUrl + ${JSON.stringify(route)});`
-    : `  await page.goto(${JSON.stringify(E2E_ORIGIN)});`;
+    ? `  const baseUrl = ${JSON.stringify(origin)};\n  await page.goto(baseUrl + ${JSON.stringify(route)});`
+    : `  await page.goto(${JSON.stringify(origin)});`;
   return `import { test, expect } from "@playwright/test";
 
-test("${escapeQuote(options.title)}", async ({ page }) => {
+test("${titled(options)}", async ({ page }) => {
   const html = ${JSON.stringify(fixture.html)};
   const json = ${JSON.stringify(fixture.json)};
   await page.route("**/*", async (route) => {
@@ -779,6 +807,63 @@ ${steps.length ? `${steps.join("\n")}\n` : ""}${visible.join("\n")}
 ${clicks.join("\n")}
 });
 `;
+}
+
+function playwrightLive(options: E2eRenderOptions): string {
+  const steps = options.steps.map((step, index) => `  // ${index + 1}. ${step}`);
+  const visible = (options.controls ?? [])
+    .map((control) => playwrightVisible(control))
+    .filter((line): line is string => Boolean(line));
+  const clicks = (options.controls ?? [])
+    .map((control) => playwrightClick(control))
+    .filter((line): line is string => Boolean(line));
+  const url = joinLocalUrl(localBase(options.baseUrl), options.route);
+  return `import { test, expect } from "@playwright/test";
+
+test("${titled(options)}", async ({ page }) => {
+  await page.goto(${JSON.stringify(url)});
+${steps.length ? `${steps.join("\n")}\n` : ""}${visible.join("\n")}
+${clicks.join("\n")}
+});
+`;
+}
+
+function playwrightComponent(options: E2eRenderOptions): string {
+  const name = options.componentName ?? "Screen";
+  const specifier = relativeFromE2e(options.filePath, name);
+  const imported =
+    options.componentDefaultExport === false
+      ? `import { ${name} } from ${JSON.stringify(specifier)};`
+      : `import ${name} from ${JSON.stringify(specifier)};`;
+  const pkg = options.ctPackage ?? "@playwright/experimental-ct-react";
+  const steps = options.steps.map((step, index) => `  // ${index + 1}. ${step}`);
+  const visible = (options.controls ?? [])
+    .map((control) => playwrightVisible(control)?.replaceAll("page.", "component."))
+    .filter((line): line is string => Boolean(line));
+  const clicks = (options.controls ?? [])
+    .map((control) => playwrightClick(control)?.replaceAll("page.", "component."))
+    .filter((line): line is string => Boolean(line));
+  return `import { test, expect } from ${JSON.stringify(pkg)};
+${imported}
+
+test("${titled(options)}", async ({ mount }) => {
+  const component = await mount(<${name} />);
+${steps.length ? `${steps.join("\n")}\n` : ""}${visible.join("\n")}
+${clicks.join("\n")}
+});
+`;
+}
+
+function joinLocalUrl(base: string, route?: string): string {
+  const origin = base.replace(/\/$/, "");
+  if (!route || route === "/") return `${origin}/`;
+  return origin + (route.startsWith("/") ? route : `/${route}`);
+}
+
+function relativeFromE2e(filePath: string | undefined, name: string): string {
+  const normalized = (filePath ?? name).replace(/\\/g, "/").replace(/^\.\//, "").replace(/\.(tsx|jsx|ts|js)$/i, "");
+  const parts = normalized.split("/").filter(Boolean);
+  return `../${parts.join("/")}`;
 }
 
 function playwrightVisible(control: UiControl): string | undefined {
@@ -918,7 +1003,7 @@ function cypress(options: E2eRenderOptions): string {
     const clicks = options.controls
       .map((control) => cypressClick(control))
       .filter((line): line is string => Boolean(line));
-    return `describe("${escapeQuote(options.title)}", () => {
+    return `describe("${titled(options)}", () => {
   it("completa o fluxo", () => {
     const html = ${JSON.stringify(fixture.html)};
     const json = ${JSON.stringify(fixture.json)};
@@ -934,7 +1019,7 @@ ${clicks.join("\n")}
   const body = options.steps
     .map((step, index) => `    // ${index + 1}. ${step}\n    // cy.findByRole("button", { name: /continuar/i }).click();`)
     .join("\n");
-  return `describe("${escapeQuote(options.title)}", () => {
+  return `describe("${titled(options)}", () => {
   it("completa o fluxo", () => {
     cy.visit("${options.baseUrl}");
 ${body}
@@ -979,7 +1064,7 @@ function cypressClick(control: UiControl): string | undefined {
   return undefined;
 }
 
-function selenium(options: { steps: string[]; baseUrl: string; title: string; controls?: UiControl[]; route?: string }): string {
+function selenium(options: E2eRenderOptions): string {
   const fromScreen = Boolean(options.controls?.length);
   const body = fromScreen
     ? [
@@ -990,10 +1075,11 @@ function selenium(options: { steps: string[]; baseUrl: string; title: string; co
     : options.steps.map((step, index) => `    // ${index + 1}. ${step}`).join("\n");
   const opener = fromScreen ? "" : `\n    await driver.get("${options.baseUrl}");`;
   const tail = fromScreen ? "" : `\n    await driver.wait(until.urlContains(""), 5000);`;
+  const runner = options.runner === "jest" ? "jest" : "vitest";
   return `import { Builder, Browser, By, until } from "selenium-webdriver";
-import { describe, it, afterEach } from "vitest";
+${jsImport(runner, ["describe", "it", "afterEach"])}
 
-describe("${escapeQuote(options.title)}", () => {
+describe("${titled(options)}", () => {
   let driver: Awaited<ReturnType<Builder["build"]>>;
 
   afterEach(async () => {
@@ -1047,33 +1133,42 @@ export function renderApiTest(options: {
   language: "ts" | "python";
   sourceCode?: string;
   filePath?: string;
+  runner?: "vitest" | "jest";
 }): { language: string; fileName: string; code: string } {
+  const runner = options.runner === "jest" ? "jest" : "vitest";
   if (options.protocol === "graphql") {
-    return { language: "ts", fileName: "graphql.contract.test.ts", code: graphqlTest(options) };
+    return { language: "ts", fileName: "graphql.contract.test.ts", code: graphqlTest(options, runner) };
   }
   if (options.protocol === "grpc") {
-    return { language: "ts", fileName: "grpc.contract.test.ts", code: grpcTest(options) };
+    return { language: "ts", fileName: "grpc.contract.test.ts", code: grpcTest(options, runner) };
   }
   const routes = extractRoutes(options.sourceCode || options.specification, options.filePath);
   if (options.language === "python") {
     return { language: "python", fileName: "test_api_contract.py", code: pythonRest(options, routes) };
   }
-  return { language: "ts", fileName: "api.contract.test.ts", code: restTest(options, routes) };
+  return { language: "ts", fileName: "api.contract.test.ts", code: restTest(options, routes, runner) };
 }
 
-function restTest(options: { specification: string; baseUrl: string }, routes: WebRoute[]): string {
+function restTest(
+  options: { specification: string; baseUrl: string },
+  routes: WebRoute[],
+  runner: "vitest" | "jest",
+): string {
   if (routes.length === 0) {
-    return `import { describe, it, expect } from "vitest";
+    const names = runner === "vitest" ? ["describe", "it", "expect"] : ["describe", "it"];
+    return `${jsImport(runner, names)}
 
 describe("contrato REST", () => {
   it(${JSON.stringify(escapeQuote(options.specification) || "rota do handler")}, () => {
-    expect.fail("Nenhuma rota extraída do handler. Passe o arquivo com o método, o path e o status.");
+    ${opaqueStatement(runner, "Nenhuma rota extraída do handler. Passe o arquivo com o método, o path e o status.")}
   });
 });`;
   }
   const base = localBase(options.baseUrl);
-  const cases = routes.flatMap((route) => restCases(route)).join("\n\n");
-  return `import { describe, it, expect } from "vitest";
+  const needsGap = routes.some((route) => !declaredValidation(route) || !route.authStatus);
+  const names = needsGap ? ["describe", "it", "expect", "test"] : ["describe", "it", "expect"];
+  const cases = routes.flatMap((route) => restCases(route, runner)).join("\n\n");
+  return `${jsImport(runner, names)}
 
 const baseUrl = ${JSON.stringify(base)};
 
@@ -1082,37 +1177,62 @@ ${cases}
 });`;
 }
 
-function restCases(route: WebRoute): string[] {
+function declaredValidation(route: WebRoute): boolean {
+  return route.validationStatus === 400 || route.validationStatus === 422;
+}
+
+function restCases(route: WebRoute, runner: "vitest" | "jest"): string[] {
   const json =
     (route.method === "GET" || route.method === "HEAD") && route.returnsJson
       ? `\n    expect(response.headers.get("content-type")).toMatch(/json/);`
       : "";
-  const cases = [
+  const invalidTitle = `entrada inválida ${route.method} ${route.path}`;
+  const anonTitle = `não autorizado ${route.method} ${route.path}`;
+  const invalid = declaredValidation(route)
+    ? statusIt(invalidTitle, invalidFetch(route), route.validationStatus!)
+    : gapTest(runner, invalidTitle, "O handler não declara 400 nem 422.");
+  const anonymous = route.authStatus
+    ? statusIt(anonTitle, anonymousFetch(route), route.authStatus)
+    : gapTest(
+        runner,
+        anonTitle,
+        route.requiresAuth
+          ? "Há guarda, mas o handler não declara 401 nem 403."
+          : "A rota não mostra guarda nem 401/403.",
+      );
+  return [
     `  it(${JSON.stringify(`${route.method} ${route.path}`)}, async () => {
     const response = await fetch(baseUrl + ${JSON.stringify(route.path)}, { method: ${JSON.stringify(route.method)} });
     expect(response.status).toBe(${route.status});${json}
   });`,
+    invalid,
+    anonymous,
   ];
-  if (route.validationStatus) {
-    cases.push(`  it(${JSON.stringify(`validação ${route.method} ${route.path}`)}, async () => {
-    const response = await fetch(baseUrl + ${JSON.stringify(route.path)}, {
+}
+
+function statusIt(title: string, fetch: string, status: number): string {
+  return `  it(${JSON.stringify(title)}, async () => {
+    ${fetch}
+    expect(response.status).toBe(${status});
+  });`;
+}
+
+function invalidFetch(route: WebRoute): string {
+  if (route.method === "POST" || route.method === "PUT" || route.method === "PATCH") {
+    return `const response = await fetch(baseUrl + ${JSON.stringify(route.path)}, {
       method: ${JSON.stringify(route.method)},
       headers: { "content-type": "application/json" },
       body: "{}",
-    });
-    expect(response.status).toBe(${route.validationStatus});
-  });`);
+    });`;
   }
-  if (route.authStatus) {
-    cases.push(`  it(${JSON.stringify(`autenticação ${route.method} ${route.path}`)}, async () => {
-    const response = await fetch(baseUrl + ${JSON.stringify(route.path)}, {
-      method: ${JSON.stringify(route.method)},
-      headers: {},
-    });
-    expect(response.status).toBe(${route.authStatus});
-  });`);
-  }
-  return cases;
+  return `const response = await fetch(baseUrl + "/x", { method: ${JSON.stringify(route.method)} });`;
+}
+
+function anonymousFetch(route: WebRoute): string {
+  return `const response = await fetch(baseUrl + ${JSON.stringify(route.path)}, {
+    method: ${JSON.stringify(route.method)},
+    headers: {},
+  });`;
 }
 
 function pythonRest(options: { specification: string; baseUrl: string }, routes: WebRoute[]): string {
@@ -1121,41 +1241,52 @@ function pythonRest(options: { specification: string; baseUrl: string }, routes:
 
 def test_rota_do_handler():
     """${options.specification.replace(/"""/g, "")}"""
-    pytest.fail("Nenhuma rota extraída do handler. Passe o arquivo com o método, o path e o status.")
+    ${pytestFail("Nenhuma rota extraída do handler. Passe o arquivo com o método, o path e o status.")}
 `;
   }
   const base = localBase(options.baseUrl);
+  const needsSkip = routes.some((route) => !route.validationStatus || !route.authStatus);
   const cases = routes
     .map((route) => {
       const json =
         (route.method === "GET" || route.method === "HEAD") && route.returnsJson
           ? `\n    assert "json" in response.headers.get("content-type", "")`
           : "";
-      const extra = [
-        route.validationStatus
-          ? `\ndef test_validacao_${slugRoute(route)}():
-    response = httpx.request(${JSON.stringify(route.method)}, BASE + ${JSON.stringify(route.path)}, json={})
-    assert response.status_code == ${route.validationStatus}
-`
-          : "",
-        route.authStatus
-          ? `\ndef test_autenticacao_${slugRoute(route)}():
-    response = httpx.request(${JSON.stringify(route.method)}, BASE + ${JSON.stringify(route.path)})
-    assert response.status_code == ${route.authStatus}
-`
-          : "",
-      ].join("");
       return `def test_${slugRoute(route)}():
     response = httpx.request(${JSON.stringify(route.method)}, BASE + ${JSON.stringify(route.path)})
     assert response.status_code == ${route.status}${json}
-${extra}`;
+${pythonSideCase(route, "validacao", route.validationStatus)}${pythonSideCase(route, "anonimo", route.authStatus)}`;
     })
     .join("\n");
   return `import httpx
-
+${needsSkip ? "import pytest\n" : ""}
 BASE = ${JSON.stringify(base)}
 
 ${cases}`;
+}
+
+function pythonSideCase(route: WebRoute, kind: "validacao" | "anonimo", status: number | undefined): string {
+  const name = `test_${kind}_${slugRoute(route)}`;
+  const declared = kind === "validacao" ? status === 400 || status === 422 : Boolean(status);
+  const call =
+    kind === "validacao" && (route.method === "POST" || route.method === "PUT" || route.method === "PATCH")
+      ? `httpx.request(${JSON.stringify(route.method)}, BASE + ${JSON.stringify(route.path)}, json={})`
+      : kind === "validacao"
+        ? `httpx.request(${JSON.stringify(route.method)}, BASE + "/x")`
+        : `httpx.request(${JSON.stringify(route.method)}, BASE + ${JSON.stringify(route.path)}, headers={})`;
+  if (declared && status) {
+    return `\ndef ${name}():
+    response = ${call}
+    assert response.status_code == ${status}
+`;
+  }
+  const reason =
+    kind === "validacao"
+      ? "O handler não declara 400 nem 422."
+      : route.requiresAuth
+        ? "Há guarda, mas o handler não declara 401 nem 403."
+        : "A rota não mostra guarda nem 401/403.";
+  return `\n${pytestSkip(`def ${name}():`, reason)}\n`;
 }
 
 function slugRoute(route: WebRoute): string {
@@ -1163,8 +1294,8 @@ function slugRoute(route: WebRoute): string {
   return `${route.method.toLowerCase()}_${path || "rota"}`;
 }
 
-function graphqlTest(options: { specification: string; baseUrl: string }): string {
-  return `import { describe, it, expect } from "vitest";
+function graphqlTest(options: { specification: string; baseUrl: string }, runner: "vitest" | "jest"): string {
+  return `${jsImport(runner, ["describe", "it", "expect"])}
 
 describe("contrato GraphQL", () => {
   it("query feliz não traz errors", async () => {
@@ -1190,20 +1321,24 @@ describe("contrato GraphQL", () => {
 // Especificação: ${options.specification}`;
 }
 
-function grpcTest(options: { specification: string; baseUrl: string }): string {
-  return `import { describe, it, expect } from "vitest";
+function grpcTest(options: { specification: string; baseUrl: string }, runner: "vitest" | "jest"): string {
+  const names = runner === "vitest" ? ["describe", "it", "expect"] : ["describe", "it"];
+  const ok = opaqueStatement(runner, `Sem cliente gRPC em ${options.baseUrl} não dá para afirmar status OK.`);
+  const invalid = opaqueStatement(runner, "Sem cliente gRPC não dá para afirmar status INVALID_ARGUMENT.");
+  const anon = opaqueStatement(runner, "Sem cliente gRPC não dá para afirmar status UNAUTHENTICATED.");
+  return `${jsImport(runner, names)}
 
 describe("contrato gRPC", () => {
   it("OK no caminho feliz", () => {
-    expect.fail("Sem cliente gRPC em ${options.baseUrl} não dá para afirmar status OK.");
+    ${ok}
   });
 
   it("INVALID_ARGUMENT quando o request viola o proto", () => {
-    expect.fail("Sem cliente gRPC não dá para afirmar status INVALID_ARGUMENT.");
+    ${invalid}
   });
 
   it("UNAUTHENTICATED sem metadata de credencial", () => {
-    expect.fail("Sem cliente gRPC não dá para afirmar status UNAUTHENTICATED.");
+    ${anon}
   });
 });
 // ${options.specification}`;
@@ -1214,6 +1349,7 @@ export function renderMobileTest(options: {
   platform: "android" | "ios" | "both";
   steps: string[];
   language: "ts" | "python";
+  runner?: "vitest" | "jest";
 }): { language: string; fileName: string; code: string } {
   const caps =
     options.platform === "ios"
@@ -1246,7 +1382,7 @@ def test_fluxo_mobile():
     language: "ts",
     fileName: "mobile.spec.ts",
     code: `import { remote } from "webdriverio";
-import { describe, it, afterEach } from "vitest";
+${jsImport(options.runner === "jest" ? "jest" : "vitest", ["describe", "it", "afterEach"])}
 
 describe("fluxo mobile", () => {
   let driver: WebdriverIO.Browser;

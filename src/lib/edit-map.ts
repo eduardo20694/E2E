@@ -4,6 +4,7 @@ import { detectStack, type DetectedStack } from "./detect.js";
 import { extractSymbols } from "./symbols.js";
 import { errorResult, textResult, type ToolTextResult } from "./result.js";
 import { doc } from "./format.js";
+import { CORE_TOOL_NAMES, TOOL_NAMES } from "../tools/register.js";
 
 /** Condição de uma tool na matriz. O resource e a resposta usam o mesmo texto. */
 export type StepGate = "always" | "junit-log" | "report" | "boundary" | "lcov" | "visual" | "extra-function" | "pact" | "manifest";
@@ -105,7 +106,7 @@ export const LAYER_GUIDE: LayerGuide[] = [
     steps: [
       { tool: "generate_api_test", reason: "Contrato com método, path e status do handler.", gate: "always" },
       { tool: "generate_integration_test", reason: "Integração do endpoint com o sistema.", gate: "always" },
-      { tool: "suggest_security_checklist", reason: "Checklist OWASP. No localhost: 401/403, cabeçalho, CORS se o fonte tem CORS, e falha se a rota com id não compara dono.", gate: "always" },
+      { tool: "suggest_security_checklist", reason: "Checklist OWASP. No localhost: 401/403, cabeçalho, CORS se o fonte tem CORS, e aviso se a rota com id não compara dono.", gate: "always" },
       { tool: "suggest_sast_setup", reason: "SAST da stack. Roda o scanner local se o binário já está instalado.", gate: "always" },
       { tool: "generate_unit_test", reason: "Há função além do handler.", gate: "extra-function" },
       { tool: "setup_consumer_driven_contracts", reason: "Contrato dirigido pelo consumidor.", gate: "pact" },
@@ -167,7 +168,7 @@ export const LAYER_GUIDE: LayerGuide[] = [
     steps: [
       { tool: "generate_unit_test", reason: "Grava e roda o unitário.", gate: "always" },
       {
-        tool: "boundary_value_analysis",
+        tool: "design_test_cases",
         reason: "O fonte traz intervalo ou comparação com número.",
         gate: "boundary",
       },
@@ -192,6 +193,8 @@ export interface EditMapInput {
   hasLogOrJunit?: boolean;
   hasReport?: boolean;
   hasLcov?: boolean;
+  /** Perfil ativo. Vazio cai em core, igual a `toolsetProfile`. */
+  profile?: "core" | "full";
 }
 
 /** Markdown da matriz. O resource `e2e://map` devolve este texto, sem tabela escrita à parte. */
@@ -207,6 +210,7 @@ export function layerMatrixMarkdown(): string {
   const notes = LAYER_GUIDE.filter((layer) => layer.note).map((layer) => `**${layer.label}.** ${layer.note}`);
   return doc([
     "# Mapa de tools por arquivo editado",
+    "A resposta de `map_tests_for_edit` corta pelo perfil ativo.",
     "Caminho em minúsculas, com barra normal. Sem filePath e sem sourceCode o mapa pede o arquivo e não chuta a camada. Arquivo que já é teste não entra em `generate_unit_test`.",
     SIBLING_RULE,
     markdownRows(rows),
@@ -231,29 +235,88 @@ export function mapTestsForEdit(input: EditMapInput): ToolTextResult {
   const layer = classifyLayer(filePath, sourceCode);
   const guide = LAYER_GUIDE.find((item) => item.id === layer);
   const covered = siblingCoversSymbols(sourceCode, input.siblingText);
-  const steps = guide ? activeSteps(guide, input, covered) : [];
+  const opened = guide ? activeSteps(guide, input, covered) : [];
+  const profile = input.profile === "full" ? "full" : "core";
+  const allowed = new Set<string>(profile === "full" ? TOOL_NAMES : CORE_TOOL_NAMES);
+  const included: MapStep[] = [];
+  const outside: MapStep[] = [];
+  for (const step of opened) {
+    if (allowed.has(step.tool)) included.push(step);
+    else outside.push(step);
+  }
+  const steps = included.slice(0, 6);
   const avoid = guide ? avoidFor(guide, covered) : FALLBACK_AVOID;
 
   const lines = steps.map((step, index) => {
     const target = step.tool === "read_workspace" && covered && input.siblingPath ? input.siblingPath : filePath;
-    return `${index + 1}. \`${step.tool}\` — ${argumentPhrase(target, input.projectRoot)}. ${step.reason}`;
+    return `${index + 1}. \`${step.tool}\` — ${argumentPhrase(target, input.projectRoot)}. ${reasonFor(step, layer, filePath)}`;
   });
+  const article = layerArticle(layer, filePath);
+  const resources = article ? `\`e2e://map\` e \`${article}\`` : "`e2e://map`";
 
   const promptNote =
     layer === "test" && !input.hasLogOrJunit && !input.hasReport ? guide?.note : undefined;
   const deployNote = layer === "deploy" ? guide?.note : undefined;
+  const orderText = lines.length
+    ? lines.join("\n")
+    : outside.length
+      ? "Nenhuma tool desta matriz está neste perfil."
+      : "Nenhuma tool desta matriz cabe neste arquivo.";
 
   const body = doc([
     `# Mapa — ${filePath}`,
     opening(filePath, layer, sourceCode, input, covered),
     "## Use nesta ordem",
-    lines.length ? lines.join("\n") : "Nenhuma tool desta matriz cabe neste arquivo.",
+    orderText,
+    outside.length
+      ? `## Fora deste perfil\n\n${outside.map((step) => `\`${step.tool}\` disponível com E2E_TOOLSET=full.`).join("\n")}`
+      : undefined,
+    `Leia ${resources} junto com esta ordem. O Cursor não anexa o corpo da resource sozinho.`,
     promptNote,
     deployNote,
     "## Não use",
     avoid.map((item) => `- \`${item.tool}\` — ${item.reason}`).join("\n"),
   ]);
   return textResult(body);
+}
+
+function reasonFor(step: MapStep, layer: LayerGuide["id"] | "unknown", filePath: string): string {
+  if (layer === "production" && step.tool === "generate_unit_test" && /\.(go|java|rb)$/.test(normalizePath(filePath))) {
+    return "Grava e não executa: o runner local não executa go test, JUnit nem RSpec.";
+  }
+  return step.reason;
+}
+
+const LAYER_ARTICLE: Record<LayerGuide["id"], string> = {
+  test: "e2e://knowledge/unit-testing",
+  ui: "e2e://knowledge/e2e-testing",
+  api: "e2e://knowledge/api-contract-testing",
+  deploy: "e2e://knowledge/shift-right",
+  sql: "e2e://knowledge/integration-testing",
+  prompt: "e2e://knowledge/ai-in-testing",
+  production: "e2e://knowledge/unit-testing",
+};
+
+function layerArticle(layer: LayerGuide["id"] | "unknown", filePath?: string): string | undefined {
+  if (layer === "unknown") return undefined;
+  if (layer === "test") return testLayerArticle(filePath ?? "");
+  return LAYER_ARTICLE[layer];
+}
+
+function testLayerArticle(filePath: string): string {
+  const normalized = normalizePath(filePath);
+  if (normalized.endsWith(".feature")) return "e2e://knowledge/bdd";
+  if (
+    normalized.includes("e2e") ||
+    normalized.includes("playwright") ||
+    normalized.includes("cypress") ||
+    normalized.includes("selenium") ||
+    normalized.includes(".spec.")
+  ) {
+    return "e2e://knowledge/e2e-testing";
+  }
+  if (hasWord(filePath, ["api", "contract", "pact"])) return "e2e://knowledge/api-contract-testing";
+  return "e2e://knowledge/unit-testing";
 }
 
 const FALLBACK_AVOID: MapAvoid[] = [
@@ -265,14 +328,14 @@ const FALLBACK_AVOID: MapAvoid[] = [
 function activeSteps(guide: LayerGuide, input: EditMapInput, covered: boolean): MapStep[] {
   const stack = detectStack(input.projectRoot);
   const selected = guide.steps.filter((step) => gateOpen(step.gate, input, stack));
-  if (!covered || !input.siblingPath) return dedupe(selected).slice(0, 6);
+  if (!covered || !input.siblingPath) return dedupe(selected);
   const review: MapStep = {
     tool: "read_workspace",
     reason: `Os símbolos já aparecem em \`${input.siblingPath}\`. Revise esse arquivo em vez de gerar outro esqueleto.`,
     gate: "always",
   };
   const rest = selected.filter((step) => !SKELETON_TOOLS.has(step.tool));
-  return dedupe([review, ...rest]).slice(0, 6);
+  return dedupe([review, ...rest]);
 }
 
 function gateOpen(gate: StepGate, input: EditMapInput, stack?: DetectedStack): boolean {

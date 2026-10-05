@@ -227,7 +227,7 @@ export function registerMutationTools(server: McpServer): void {
     server,
     "mutation_testing_report",
     "Relatório de mutation testing",
-    "Mutação lê relatório do disco e executa o Stryker local quando `@stryker-mutator/core` está em node_modules; sem o pacote, grava o config e não executa.",
+    "Mutação lê relatório do disco e executa o Stryker local quando `@stryker-mutator/core` está em node_modules; sem o pacote, grava o config e não executa. Vitest, Jest, Playwright, ESLint, Stryker e Cucumber só rodam se já estão em `node_modules` (não baixam pacote). k6, npm, Bandit e Gosec são CLI de máquina, procurados no PATH. Não há `npx`.",
     {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),

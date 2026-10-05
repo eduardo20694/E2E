@@ -237,29 +237,83 @@ const conditionSchema = z.object({
   values: z.array(z.string()).min(1),
 });
 
+export interface DesignTestCasesInput {
+  technique?: "boundary" | "equivalence" | "decision" | "state" | "pairwise";
+  rule?: string;
+  min?: number;
+  max?: number;
+  variable?: string;
+  domain?: string;
+  classes?: EquivalenceInput["classes"];
+  conditions?: DecisionTableInput["conditions"];
+  actions?: string[];
+  rules?: DecisionTableInput["rules"];
+  states?: string[];
+  transitions?: StateTransitionInput["transitions"];
+  diagram?: string;
+  parameters?: PairwiseInput["parameters"];
+  sourceCode?: string;
+}
+
+export function designTestCases(input: DesignTestCasesInput): ToolTextResult {
+  switch (input.technique) {
+    case "boundary":
+      return boundaryValueAnalysis({
+        rule: input.rule ?? "",
+        min: input.min,
+        max: input.max,
+        variable: input.variable,
+        sourceCode: input.sourceCode,
+      });
+    case "equivalence":
+      return equivalencePartitioning({
+        domain: input.domain ?? input.rule ?? "",
+        classes: input.classes,
+        sourceCode: input.sourceCode,
+      });
+    case "decision":
+      if (!input.conditions?.length) {
+        return errorResult("design_test_cases com technique decision exige conditions.");
+      }
+      return buildDecisionTable({
+        conditions: input.conditions,
+        actions: input.actions,
+        rules: input.rules,
+        sourceCode: input.sourceCode,
+      });
+    case "state":
+      return stateTransitionTest({
+        states: input.states,
+        transitions: input.transitions,
+        diagram: input.diagram ?? input.rule,
+        sourceCode: input.sourceCode,
+      });
+    case "pairwise":
+      if (!input.parameters?.length) {
+        return errorResult("design_test_cases com technique pairwise exige parameters.");
+      }
+      return pairwiseTestGenerator({
+        parameters: input.parameters,
+        sourceCode: input.sourceCode,
+      });
+    default:
+      return errorResult("design_test_cases exige technique: boundary, equivalence, decision, state ou pairwise.");
+  }
+}
+
 export function registerDesignTools(server: McpServer): void {
   registerTool(
     server,
-    "boundary_value_analysis",
-    "Análise de valor limite",
-    "Limite calcula e não grava os casos nas bordas de uma regra numérica (abaixo, no limite, acima e o valor nominal).",
+    "design_test_cases",
+    "Desenhar casos de teste",
+    "Calcula uma técnica de desenho e não grava arquivo.",
     {
-      rule: z.string().describe("Regra de negócio, por exemplo 'idade entre 18 e 65'."),
+      technique: z.enum(["boundary", "equivalence", "decision", "state", "pairwise"]),
+      rule: z.string().optional().describe("Regra ou diagrama, por exemplo 'idade entre 18 e 65'."),
       min: z.number().optional(),
       max: z.number().optional(),
       variable: z.string().optional(),
-      sourceCode: z.string().optional(),
-    },
-    (args) => boundaryValueAnalysis(args as unknown as BoundaryInput),
-  );
-
-  registerTool(
-    server,
-    "equivalence_partitioning",
-    "Particionamento de equivalência",
-    "Equivalência calcula e não grava um representante de cada classe válida e inválida do domínio.",
-    {
-      domain: z.string().describe("Descrição do domínio de entrada."),
+      domain: z.string().optional().describe("Domínio, quando technique é equivalence."),
       classes: z
         .array(
           z.object({
@@ -269,18 +323,7 @@ export function registerDesignTools(server: McpServer): void {
           }),
         )
         .optional(),
-      sourceCode: z.string().optional(),
-    },
-    (args) => equivalencePartitioning(args as unknown as EquivalenceInput),
-  );
-
-  registerTool(
-    server,
-    "decision_table",
-    "Tabela de decisão",
-    "Decisão calcula e não grava a tabela a partir das condições e das ações de cada regra.",
-    {
-      conditions: z.array(conditionSchema).min(1),
+      conditions: z.array(conditionSchema).optional(),
       actions: z.array(z.string()).optional(),
       rules: z
         .array(
@@ -290,17 +333,6 @@ export function registerDesignTools(server: McpServer): void {
           }),
         )
         .optional(),
-      sourceCode: z.string().optional(),
-    },
-    (args) => buildDecisionTable(args as unknown as DecisionTableInput),
-  );
-
-  registerTool(
-    server,
-    "state_transition_test",
-    "Teste de transição de estado",
-    "Estados calcula e não grava as transições válidas e inválidas de uma máquina de estados.",
-    {
       states: z.array(z.string()).optional(),
       transitions: z
         .array(
@@ -313,17 +345,6 @@ export function registerDesignTools(server: McpServer): void {
         )
         .optional(),
       diagram: z.string().optional().describe("Exemplo: criado -> pago -> enviado"),
-      sourceCode: z.string().optional(),
-    },
-    (args) => stateTransitionTest(args as unknown as StateTransitionInput),
-  );
-
-  registerTool(
-    server,
-    "pairwise_test_generator",
-    "Gerador pairwise",
-    "Pairwise calcula e não grava o conjunto em que cada par de valores aparece ao menos uma vez.",
-    {
       parameters: z
         .array(
           z.object({
@@ -331,9 +352,9 @@ export function registerDesignTools(server: McpServer): void {
             values: z.array(z.string()).min(1),
           }),
         )
-        .min(1),
+        .optional(),
       sourceCode: z.string().optional(),
     },
-    (args) => pairwiseTestGenerator(args as unknown as PairwiseInput),
+    (args) => designTestCases(args as unknown as DesignTestCasesInput),
   );
 }

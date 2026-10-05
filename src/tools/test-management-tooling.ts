@@ -1,12 +1,9 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { z } from "zod";
 import { detectStack, stackSummary } from "../lib/detect.js";
 import { doc } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
-import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
-import { writeShape, type ProjectContextInput } from "../lib/schema.js";
-import { deliver, resolveToolRoot, type LoopFlags } from "./loop.js";
+import type { ProjectContextInput } from "../lib/schema.js";
 
 export interface ManagementInput extends ProjectContextInput {
   context?: string;
@@ -57,61 +54,6 @@ export function suggestReportingSetup(input: ProjectContextInput): ToolTextResul
   );
 }
 
-export function registerManagementTools(server: McpServer): void {
-  registerTool(
-    server,
-    "suggest_test_management_tool",
-    "Ferramenta de gestão de teste",
-    "Gestão grava e não executa `docs/qa/gestao-de-teste.md` recomendando TestRail, Zephyr ou Xray conforme o uso de Jira.",
-    {
-      context: z.string().optional(),
-      usesJira: z.boolean().optional(),
-      projectRoot: z.string().optional(),
-      filePath: z.string().optional(),
-      sourceCode: z.string().optional(),
-      ...writeShape,
-    },
-    async (args) => {
-      const input = args as unknown as ManagementInput & LoopFlags;
-      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
-      const ready = { ...input, projectRoot: root ?? input.projectRoot };
-      const result = suggestTestManagementTool(ready);
-      if (result.isError) return result;
-      return deliver({
-        server,
-        input: ready,
-        preface: result,
-        relativePath: "docs/qa/gestao-de-teste.md",
-        contents: result.content[0]?.text ?? "",
-      });
-    },
-    { readOnly: false },
-  );
-
-  registerTool(
-    server,
-    "suggest_reporting_setup",
-    "Relatório de execução",
-    "Relatório grava e não executa `docs/qa/relatorio.md` sugerindo Allure ou ReportPortal conforme a stack.",
-    {
-      projectRoot: z.string().optional(),
-      filePath: z.string().optional(),
-      sourceCode: z.string().optional(),
-      ...writeShape,
-    },
-    async (args) => {
-      const input = args as ProjectContextInput & LoopFlags;
-      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
-      const ready = { ...input, projectRoot: root ?? input.projectRoot };
-      const result = suggestReportingSetup(ready);
-      return deliver({
-        server,
-        input: ready,
-        preface: result,
-        relativePath: "docs/qa/relatorio.md",
-        contents: result.content[0]?.text ?? "",
-      });
-    },
-    { readOnly: false },
-  );
+export function registerManagementTools(_server: McpServer): void {
+  // Gestão e relatório ficam em e2e://knowledge/test-management-tools e e2e://knowledge/qa-metrics.
 }

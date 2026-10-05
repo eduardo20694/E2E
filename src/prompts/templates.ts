@@ -1,5 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
+import { toolsetProfile } from "../tools/register.js";
 
 /**
  * Prompts reutilizáveis. No Cursor eles aparecem pelo nome
@@ -7,7 +8,8 @@ import { z } from "zod";
  * `/e2e-legacy-code-safety-net`, `/e2e-ml-test-plan`, `/e2e-pipeline-audit`, `/e2e-automation-roi-check`).
  * Dois-pontos não entram no nome: o identificador MCP e o Windows rejeitam esse caractere.
  */
-export function registerPrompts(server: McpServer): void {
+export function registerPrompts(server: McpServer, profile: "core" | "full" = toolsetProfile()): void {
+  const full = profile === "full";
   server.registerPrompt(
     "e2e-review-test",
     {
@@ -45,7 +47,7 @@ export function registerPrompts(server: McpServer): void {
     }),
   );
 
-  server.registerPrompt(
+  if (full) server.registerPrompt(
     "e2e-plan-feature",
     {
       title: "Planejar testes da feature",
@@ -66,9 +68,9 @@ export function registerPrompts(server: McpServer): void {
               "Monte um plano de testes para o requisito abaixo.",
               "Cubra as camadas que o risco pede, separando o que é mockado, o que roda em ambiente real isolado, o que roda em staging e o que roda de verdade em produção depois do deploy.",
               "Inclua smoke sintético, canário ou flag se o risco chegar em produção. Diga que shift-left não substitui shift-right.",
-              "Use as tools do servidor E2E (generate_test_plan, generate_gherkin_scenario, environment_strategy_advisor, generate_smoke_test_prod) quando forem produzir o artefato.",
+              "Use as tools do servidor E2E (generate_test_plan, generate_gherkin_scenario, generate_smoke_test_prod) quando forem produzir o artefato.",
               projectRoot ? `projectRoot: ${projectRoot}` : "Peça o projectRoot se for preciso detectar a stack.",
-              "Resources: e2e://knowledge/shift-left, e2e://knowledge/shift-right e e2e://knowledge/test-environments.",
+              "Resources: e2e://knowledge/shift-left-right, e2e://knowledge/test-environments, e2e://knowledge/test-management-tools, e2e://knowledge/qa-metrics e e2e://knowledge/compliance-testing.",
               "",
               requirement,
             ]
@@ -100,13 +102,13 @@ export function registerPrompts(server: McpServer): void {
             text: [
               "Audite a suíte de testes deste projeto e diga se existe estratégia de shift-right.",
               `projectRoot: ${projectRoot}`,
-              "Chame suggest_test_pyramid_balance e environment_strategy_advisor com esse projectRoot.",
+              "Chame suggest_test_pyramid_balance com esse projectRoot. Ambiente, shift, gestão, relatório e compliance estão nas resources, não em tools.",
               "Procure CI, Kubernetes, feature flag e synthetic na stack detectada. Se não houver, diga que shift-right não está configurado.",
               "Se houver relatório de cobertura ou log de falha no contexto, chame code_coverage_advisor e flakiness_analyzer.",
               "Devolva: contagem por camada, desvio da referência 70/20/10, lacunas e três ações em ordem.",
               "Não invente arquivos que a tool não listou.",
               notes ? `Notas: ${notes}` : undefined,
-              "Resources: e2e://knowledge/qa-metrics e e2e://knowledge/shift-right.",
+              "Resources: e2e://knowledge/qa-metrics, e2e://knowledge/shift-left-right e e2e://knowledge/test-environments.",
             ]
               .filter(Boolean)
               .join("\n"),
@@ -116,7 +118,7 @@ export function registerPrompts(server: McpServer): void {
     }),
   );
 
-  server.registerPrompt(
+  if (full) server.registerPrompt(
     "e2e-production-readiness",
     {
       title: "Prontidão para produção",
@@ -140,10 +142,10 @@ export function registerPrompts(server: McpServer): void {
               "- canário com métrica de rollback",
               "- monitoramento sintético da jornada crítica",
               "- plano de rollback com dono",
-              "Use generate_smoke_test_prod, setup_canary_release, setup_synthetic_monitoring e environment_strategy_advisor.",
+              "Use generate_smoke_test_prod, setup_canary_release e setup_synthetic_monitoring.",
               "Deixe claro o que roda de verdade em produção e o que isso não substitui no shift-left.",
               projectRoot ? `projectRoot: ${projectRoot}` : undefined,
-              "Resource: e2e://knowledge/shift-right.",
+              "Resources: e2e://knowledge/shift-left-right e e2e://knowledge/test-environments.",
               "",
               change,
             ]
@@ -155,7 +157,7 @@ export function registerPrompts(server: McpServer): void {
     }),
   );
 
-  server.registerPrompt(
+  if (full) server.registerPrompt(
     "e2e-legacy-code-safety-net",
     {
       title: "Rede de segurança do legado",
@@ -187,7 +189,7 @@ export function registerPrompts(server: McpServer): void {
     }),
   );
 
-  server.registerPrompt(
+  if (full) server.registerPrompt(
     "e2e-ml-test-plan",
     {
       title: "Plano de teste de ML",
@@ -239,7 +241,12 @@ export function registerPrompts(server: McpServer): void {
             text: [
               "Audite o pipeline de testes deste projeto.",
               `projectRoot: ${projectRoot}`,
-              "Use suggest_test_impact_analysis, suggest_test_parallelization e suggest_flaky_test_quarantine.",
+              ...(profile === "full"
+                ? ["Use suggest_test_impact_analysis, suggest_test_parallelization e suggest_flaky_test_quarantine."]
+                : [
+                    "Use suggest_test_impact_analysis.",
+                    "Paralelismo e quarentena estão disponíveis com E2E_TOOLSET=full.",
+                  ]),
               "Não invente workflow que a detecção de stack não viu.",
               changedFiles ? `Arquivos alterados:\n${changedFiles}` : "Se não houver diff, descreva a estratégia sem listar arquivo imaginário.",
               "Resource: e2e://knowledge/ci-cd-test-optimization.",
@@ -252,7 +259,7 @@ export function registerPrompts(server: McpServer): void {
     }),
   );
 
-  server.registerPrompt(
+  if (full) server.registerPrompt(
     "e2e-automation-roi-check",
     {
       title: "Vale automatizar?",

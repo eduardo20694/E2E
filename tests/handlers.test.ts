@@ -74,6 +74,34 @@ describe("generate_unit_test", () => {
     expect(body).toContain("pytest");
     expect(body).not.toContain("from \"vitest\"");
   });
+
+  it("avisa que Go, Java e Ruby gravam e o runner local não executa", () => {
+    const sentence = "O runner local não executa go test, JUnit nem RSpec.";
+    const go = text(
+      generateUnitTest({
+        sourceCode: "package pricing\nfunc Price(n int) int { return n }\n",
+        filePath: "pricing.go",
+      }),
+    );
+    expect(go).toContain("**Framework:** go");
+    expect(go).toContain(sentence);
+    const java = text(
+      generateUnitTest({
+        sourceCode: "public class Pricing { int price(int n) { return n; } }",
+        filePath: "Pricing.java",
+      }),
+    );
+    expect(java).toContain("**Framework:** junit");
+    expect(java).toContain(sentence);
+    const ruby = text(
+      generateUnitTest({
+        sourceCode: "class Pricing\n  def price(n)\n    n\n  end\nend\n",
+        filePath: "pricing.rb",
+      }),
+    );
+    expect(ruby).toContain("**Framework:** rspec");
+    expect(ruby).toContain(sentence);
+  });
 });
 
 describe("generate_integration_test", () => {
@@ -90,14 +118,14 @@ describe("generate_integration_test", () => {
 });
 
 describe("generate_e2e_test", () => {
-  it("mantém o erro sem controle e sem fluxo", () => {
-    const result = generateE2eTest({});
+  it("mantém o erro sem controle e sem fluxo", async () => {
+    const result = await generateE2eTest({});
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Sem controle e sem fluxo");
   });
 
-  it("pede o arquivo da tela quando só há userFlow", () => {
-    const result = generateE2eTest({
+  it("pede o arquivo da tela quando só há userFlow", async () => {
+    const result = await generateE2eTest({
       userFlow: "Abrir a home. Entrar com o usuário. Ver o painel.",
     });
     expect(result.isError).toBe(true);
@@ -289,9 +317,14 @@ describe("estratégia", () => {
     fs.writeFileSync(path.join(root, "src", "sum.test.ts"), "test('a', () => {})");
     fs.mkdirSync(path.join(root, "e2e"), { recursive: true });
     fs.writeFileSync(path.join(root, "e2e", "buy.spec.ts"), "test('b', () => {})");
+    fs.writeFileSync(path.join(root, "e2e", "flow.mocked.spec.ts"), "test('tela @mocked', () => {})");
+    fs.writeFileSync(path.join(root, "e2e", "legacy.spec.ts"), "test('legado @mocked', () => {})");
     const body = text(suggestTestPyramidBalance({ projectRoot: root }));
     expect(body).toContain("sum.test.ts");
     expect(body).toContain("buy.spec.ts");
+    expect(body).toContain("flow.mocked.spec.ts");
+    expect(body).toContain("Mockado, fora da pirâmide: 2.");
+    expect(body).toContain("| E2E | 1 |");
   });
 
   it("ordena pelo produto probabilidade × impacto", () => {

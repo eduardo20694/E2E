@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { renderMobileTest } from "../lib/codegen.js";
-import { detectStack, inferLanguage, stackSummary } from "../lib/detect.js";
+import { detectStack, inferLanguage, resolveJsRunner, stackSummary } from "../lib/detect.js";
 import { codeBlock, doc, splitSteps } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
@@ -28,6 +28,7 @@ export function generateMobileTest(input: GenerateMobileTestInput): ToolTextResu
     platform,
     steps: splitSteps(input.flow),
     language: language === "python" ? "python" : "ts",
+    runner: resolveJsRunner({ projectRoot: input.projectRoot, filePath: input.filePath, stack }),
   });
 
   return textResult(
@@ -65,6 +66,7 @@ export async function handleGenerateMobileTest(input: GenerateMobileTestInput & 
     platform: ready.platform ?? "android",
     steps: splitSteps(ready.flow),
     language: language === "python" ? "python" : "ts",
+    runner: resolveJsRunner({ projectRoot: ready.projectRoot, filePath: ready.filePath }),
   });
   const hasAppium = Boolean(ready.projectRoot && appiumInstalled(ready.projectRoot));
   return deliver({

@@ -52,7 +52,7 @@ export async function readWorkspace(
   let pyramid = "";
   try {
     const counts = scanPyramid(resolved.root);
-    pyramid = `Testes no disco: ${counts.unit} unitários, ${counts.integration} de integração, ${counts.e2e} E2E.`;
+    pyramid = `Testes no disco: ${counts.unit} unitários, ${counts.integration} de integração, ${counts.e2e} E2E. Mockado, fora da pirâmide: ${counts.mocked}.`;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     pyramid = `Não contei a pirâmide: ${message}`;

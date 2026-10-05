@@ -141,35 +141,4 @@ export function registerDisasterTools(server: McpServer): void {
     { readOnly: false },
   );
 
-  registerTool(
-    server,
-    "suggest_compliance_checklist",
-    "Checklist de compliance",
-    "Compliance grava e não executa `docs/qa/compliance.md` com checagens de LGPD, GDPR, PCI-DSS ou HIPAA no uso de dado de teste.",
-    {
-      context: z.string().optional(),
-      frameworks: z.array(z.enum(["LGPD", "GDPR", "PCI-DSS", "HIPAA"])).optional(),
-      projectRoot: z.string().optional(),
-      filePath: z.string().optional(),
-      sourceCode: z.string().optional(),
-      ...writeShape,
-    },
-    async (args) => {
-      const input = args as unknown as ComplianceInput & LoopFlags;
-      const root = await resolveToolRoot(server, input.projectRoot, input.filePath);
-      const ready = { ...input, projectRoot: root ?? input.projectRoot };
-      const result = suggestComplianceChecklist(ready);
-      if (result.isError) return result;
-      return deliver({
-        server,
-        input: ready,
-        preface: result,
-        relativePath: "docs/qa/compliance.md",
-        contents: result.content[0]?.text ?? "",
-        neverRun: true,
-        skippedNote: "Não foi executado.",
-      });
-    },
-    { readOnly: false },
-  );
 }

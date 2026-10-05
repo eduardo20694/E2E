@@ -40,7 +40,7 @@ if (!name || !samples[name]) {
   process.exit(1);
 }
 
-const result = samples[name]();
+const result = await samples[name]();
 if (result.isError || !result.content[0]?.text.trim()) {
   console.error(result.content[0]?.text ?? "sem conteúdo");
   process.exit(1);

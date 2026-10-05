@@ -5,7 +5,9 @@ export interface PyramidCounts {
   unit: number;
   integration: number;
   e2e: number;
-  files: { unit: string[]; integration: string[]; e2e: string[] };
+  /** Tela mockada. Fora de unit, integration e e2e. */
+  mocked: number;
+  files: { unit: string[]; integration: string[]; e2e: string[]; mocked: string[] };
 }
 
 const SKIP = new Set([
@@ -63,7 +65,8 @@ export function scanPyramid(projectRoot: string, maxDepth = 6): PyramidCounts {
     unit: 0,
     integration: 0,
     e2e: 0,
-    files: { unit: [], integration: [], e2e: [] },
+    mocked: 0,
+    files: { unit: [], integration: [], e2e: [], mocked: [] },
   };
 
   if (!fs.existsSync(root)) {
@@ -93,19 +96,40 @@ function walk(root: string, current: string, depth: number, maxDepth: number, co
     if (!entry.isFile() || !TEST_FILE.test(entry.name)) continue;
 
     const relative = path.relative(root, full).split(path.sep).join("/");
-    const bucket = classify(relative);
+    const bucket = classify(relative, full);
     counts[bucket] += 1;
     if (counts.files[bucket].length < 20) counts.files[bucket].push(relative);
   }
 }
 
-function classify(relative: string): "unit" | "integration" | "e2e" {
+const MOCK_READ = 65_536;
+
+function classify(relative: string, fullPath: string): "unit" | "integration" | "e2e" | "mocked" {
   const value = relative.toLowerCase();
+  if (value.includes(".mocked.") || readHead(fullPath).includes("@mocked")) return "mocked";
   if (/e2e|cypress|playwright|selenium|acceptance|features\/.+\\.feature/.test(value) || value.endsWith(".feature")) {
     return "e2e";
   }
   if (/integration|contract|testcontainers|api[-_].*spec|supertest/.test(value)) return "integration";
   return "unit";
+}
+
+function readHead(fullPath: string): string {
+  try {
+    const stat = fs.statSync(fullPath);
+    if (!stat.isFile() || stat.size === 0) return "";
+    const length = Math.min(stat.size, MOCK_READ);
+    const buffer = Buffer.alloc(length);
+    const fd = fs.openSync(fullPath, "r");
+    try {
+      fs.readSync(fd, buffer, 0, length, 0);
+    } finally {
+      fs.closeSync(fd);
+    }
+    return buffer.toString("utf8");
+  } catch {
+    return "";
+  }
 }
 
 export function pyramidBalance(counts: Pick<PyramidCounts, "unit" | "integration" | "e2e">): {

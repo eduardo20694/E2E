@@ -246,7 +246,7 @@ export function registerStaticTools(server: McpServer): void {
     server,
     "suggest_sast_setup",
     "Configurar SAST",
-    "SAST grava o config da linguagem e executa eslint, bandit ou gosec quando o binário local já existe; sem binário, ou em Java sem scanner local, grava e não executa. Se já existe sonar-project.properties, não grava outro config.",
+    "SAST grava o config da linguagem e executa eslint, bandit ou gosec quando o binário local já existe; sem binário, ou em Java sem scanner local, grava e não executa. Se já existe sonar-project.properties, não grava outro config. Vitest, Jest, Playwright, ESLint, Stryker e Cucumber só rodam se já estão em `node_modules` (não baixam pacote). k6, npm, Bandit e Gosec são CLI de máquina, procurados no PATH. Não há `npx`.",
     {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
@@ -262,7 +262,7 @@ export function registerStaticTools(server: McpServer): void {
     server,
     "suggest_sca_setup",
     "Configurar SCA",
-    "SCA grava `.snyk` ou `.github/dependabot.yml` e executa `npm audit` ou `pip-audit` quando o binário já está instalado; sem binário, grava e não executa.",
+    "SCA grava `.snyk` ou `.github/dependabot.yml` e executa `npm audit` ou `pip-audit` quando o binário já está instalado; sem binário, grava e não executa. Vitest, Jest, Playwright, ESLint, Stryker e Cucumber só rodam se já estão em `node_modules` (não baixam pacote). k6, npm, Bandit e Gosec são CLI de máquina, procurados no PATH. Não há `npx`.",
     {
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),

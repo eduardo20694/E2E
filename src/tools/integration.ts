@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { renderIntegrationTest } from "../lib/codegen.js";
-import { detectStack, inferLanguage, stackSummary } from "../lib/detect.js";
+import { detectStack, inferLanguage, resolveJsRunner, stackSummary } from "../lib/detect.js";
 import { codeBlock, doc } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
@@ -30,6 +30,7 @@ export function generateIntegrationTest(input: GenerateIntegrationTestInput): To
   const blob = `${input.description} ${modules.join(" ")} ${input.database ?? ""} ${input.sourceCode ?? ""}`;
   const useTestcontainers = stack.hasTestcontainers || stack.hasDocker || DB_HINT.test(blob);
 
+  const runner = resolveJsRunner({ projectRoot: input.projectRoot, filePath: input.filePath, stack });
   const rendered = renderIntegrationTest({
     description: input.description,
     modules,
@@ -39,6 +40,7 @@ export function generateIntegrationTest(input: GenerateIntegrationTestInput): To
     sourceCode: input.sourceCode,
     filePath: input.filePath,
     baseUrl: "http://127.0.0.1:3000",
+    runner,
   });
 
   return textResult(
@@ -81,6 +83,7 @@ export async function handleGenerateIntegrationTest(
   const target = language === "python" ? "python" : language === "java" ? "java" : "ts";
   const modules = ready.modules?.filter(Boolean) ?? [];
   const blob = `${ready.description} ${modules.join(" ")} ${ready.database ?? ""} ${ready.sourceCode ?? ""}`;
+  const jsRunner = resolveJsRunner({ projectRoot: ready.projectRoot, filePath: ready.filePath, stack });
   const rendered = renderIntegrationTest({
     description: ready.description,
     modules,
@@ -90,8 +93,9 @@ export async function handleGenerateIntegrationTest(
     sourceCode: ready.sourceCode,
     filePath: ready.filePath,
     baseUrl: "http://127.0.0.1:3000",
+    runner: jsRunner,
   });
-  const runner: TestRunner | undefined = target === "python" ? "pytest" : target === "ts" ? "vitest" : undefined;
+  const runner: TestRunner | undefined = target === "python" ? "pytest" : target === "ts" ? jsRunner : undefined;
   return deliver({
     server,
     input: ready,

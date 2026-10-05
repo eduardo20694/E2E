@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -26,17 +27,22 @@ function recommended(body: string): string[] {
 }
 
 describe("teste de site a partir do arquivo", () => {
-  it("usa o botão Pagar e a rota /checkout", () => {
+  it("usa o botão Pagar e a rota /checkout", async () => {
     const unit = buildUnitTest({ sourceCode: checkout, filePath: checkoutPath, framework: "vitest" });
     expect(unit.code).toContain('getByRole("button", { name: "Pagar" })');
     expect(unit.code).not.toContain("toBeDefined");
     expect(unit.code).not.toContain("expect.fail");
 
     const e2e = text(
-      generateE2eTest({ sourceCode: checkout, filePath: checkoutPath, baseUrl: "https://app.example.com" }),
+      await generateE2eTest({ sourceCode: checkout, filePath: checkoutPath, baseUrl: "https://app.example.com" }),
     );
     expect(e2e).toContain("/checkout");
     expect(e2e).toContain("Pagar");
+    expect(e2e).toContain("tela mockada");
+    expect(e2e).toContain("flow.mocked.spec.ts");
+    expect(e2e).toContain("@mocked");
+    expect(e2e).not.toContain("flow.spec.ts");
+    expect(e2e).not.toMatch(/Teste E2E/);
     expect(e2e).toContain("route.fulfill");
     expect(e2e).toContain("<button>Pagar</button>");
     expect(e2e).toContain('await expect(page.getByRole("button", { name: "Pagar" })).toBeVisible();');
@@ -79,6 +85,73 @@ describe("teste de site a partir do arquivo", () => {
     });
     expect(built.code).toContain("add(1, 2)");
     expect(built.code).toContain("toBe(3)");
+    expect(built.result.content[0].text).toContain("caracterização");
+  });
+
+  it("afirma 400 e 401 quando o handler declara, e todo quando não declara", () => {
+    const declared = `app.post("/orders", (req, res) => {
+      if (!req.body.name) return res.status(400).json({ error: "nome" });
+      if (!req.headers.authorization) return res.status(401).end();
+      res.status(201).json({ id: 1 });
+    });`;
+    const withStatus = text(generateApiTest({ specification: "POST /orders", sourceCode: declared }));
+    expect(withStatus).toContain("toBe(400)");
+    expect(withStatus).toContain("toBe(401)");
+    expect(withStatus).toContain("toBe(201)");
+
+    const plain = 'app.get("/health", (_req, res) => res.status(200).json({ ok: true }))';
+    const gap = text(generateApiTest({ specification: plain, sourceCode: plain }));
+    expect(gap).toContain("test.todo");
+    const gapCode = gap.slice(gap.indexOf("```"));
+    expect(gapCode).not.toContain("test.fixme");
+    expect(gapCode).not.toMatch(/test\.todo\([\s\S]*?,\s*(?:async\s*)?\(/);
+    expect(gapCode).not.toMatch(/test\.todo[\s\S]*await fetch/);
+    expect(gap).toContain("O handler não declara 400 nem 422.");
+    expect(gap).toContain("não mostra guarda");
+    expect(gap).not.toContain("expect.fail(\"Rota com id sem comparação de dono no handler.\")");
+    expect(gap).not.toContain("toBe(400)");
+    expect(gap).not.toContain("toBe(401)");
+  });
+});
+
+describe("componente sem rota de página", () => {
+  it("não trata o localhost como E2E live", async () => {
+    const button = "export function Button(){ return <button>Salvar</button>; }";
+    const body = text(
+      await generateE2eTest({ sourceCode: button, filePath: "src/components/Button.tsx", baseUrl: "http://127.0.0.1:3000" }),
+    );
+    expect(body).toContain("não uso o localhost como E2E live");
+    expect(body).toContain("flow.mocked.spec.ts");
+    expect(body).toContain("@mocked");
+    expect(body).not.toContain("page.goto na URL real");
+    expect(body).not.toContain("flow.spec.ts");
+  });
+
+  it("só trata a página como live quando o GET da rota responde 2xx", async () => {
+    const probe = async (status: number) => {
+      const server = http.createServer((req, res) => {
+        res.statusCode = req.url === "/checkout" ? status : 404;
+        res.end("ok");
+      });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+      const address = server.address();
+      const port = address && typeof address === "object" ? address.port : 0;
+      try {
+        return text(
+          await generateE2eTest({
+            sourceCode: checkout,
+            filePath: checkoutPath,
+            baseUrl: `http://127.0.0.1:${port}`,
+          }),
+        );
+      } finally {
+        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
+      }
+    };
+
+    expect(await probe(404)).not.toContain("page.goto na URL real");
+    expect(await probe(302)).not.toContain("page.goto na URL real");
+    expect(await probe(200)).toContain("page.goto na URL real");
   });
 });
 
@@ -95,9 +168,12 @@ describe("mapa da tela e do handler", () => {
   });
 
   it("ordena o handler e omite pact e unitário sem função extra", () => {
-    const tools = recommended(
-      text(mapTestsForEdit({ filePath: "src/routes/health.ts", sourceCode: health })),
-    );
+    const body = text(mapTestsForEdit({ filePath: "src/routes/health.ts", sourceCode: health }));
+    const tools = recommended(body);
+    expect(body).toContain("e2e://knowledge/api-contract-testing");
+    expect(body).toContain("e2e://map");
+    expect(body).toContain("aviso se a rota com id não compara dono");
+    expect(body).not.toContain("falha se a rota com id");
     expect(tools).toEqual([
       "generate_api_test",
       "generate_integration_test",
@@ -158,5 +234,23 @@ describe("mapa da tela e do handler", () => {
     const production = matrix.split("\n").find((line) => line.startsWith("| Código de produção |"));
     expect(production).toContain("suggest_sca_setup");
     expect(production).toContain("package.json");
+  });
+});
+
+describe("test.todo", () => {
+  it("não recebe função em nenhum gerador", () => {
+    const files: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) walk(full);
+        else if (entry.name.endsWith(".ts")) files.push(full);
+      }
+    };
+    walk(path.resolve("src"));
+    const pattern = /test\.todo\([\s\S]{0,240},\s*(?:async\s*)?\(/;
+    for (const file of files) {
+      expect(pattern.test(fs.readFileSync(file, "utf8")), file).toBe(false);
+    }
   });
 });

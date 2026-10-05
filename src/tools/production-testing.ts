@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { detectStack, type DetectedStack, stackSummary } from "../lib/detect.js";
+import { detectStack, resolveJsRunner, type DetectedStack, stackSummary } from "../lib/detect.js";
+import { jsImport, opaqueStatement } from "../lib/markers.js";
 import { sampleArg } from "../lib/codegen.js";
 import { codeBlock, doc, markdownTable, splitSteps } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
@@ -541,11 +542,13 @@ describe("dark launch", () => {
 });
 `;
   }
-  return `import { describe, it, expect } from "vitest";
+  const runner = resolveJsRunner({ projectRoot: input.projectRoot, filePath: input.filePath });
+  const names = runner === "vitest" ? ["describe", "it", "expect"] : ["describe", "it"];
+  return `${jsImport(runner, names)}
 
 describe("dark launch", () => {
   it("a sombra não grava e não mostra ao usuário", () => {
-    expect.fail("A sombra não grava e não mostra o resultado ao usuário.");
+    ${opaqueStatement(runner, "A sombra não grava e não mostra o resultado ao usuário.")}
   });
 });
 `;

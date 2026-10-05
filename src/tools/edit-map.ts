@@ -5,6 +5,7 @@ import { mapTestsForEdit, siblingCandidates, type EditMapInput } from "../lib/ed
 import { registerTool } from "../lib/register-tool.js";
 import { readFirstExisting, readSuiteEvidence } from "../lib/report.js";
 import { errorResult } from "../lib/result.js";
+import { toolsetProfile } from "./register.js";
 import { cursorRoots, readProjectFile, resolveInside, resolveProjectRoot } from "../lib/workspace.js";
 
 export function registerEditMapTools(server: McpServer): void {
@@ -12,7 +13,7 @@ export function registerEditMapTools(server: McpServer): void {
     server,
     "map_tests_for_edit",
     "Mapear testes do arquivo editado",
-    "Chame primeiro, com o filePath do arquivo editado ou aberto e o projectRoot. Diz a camada e devolve no máximo seis tools já registradas, nesta ordem. Somente leitura: não grava e não executa.",
+    "Chame primeiro, com o filePath do arquivo editado ou aberto e o projectRoot. Diz a camada e devolve no máximo seis tools do perfil ativo, nesta ordem. O que falta aparece como disponível com E2E_TOOLSET=full. Somente leitura: não grava e não executa.",
     {
       filePath: z.string().optional().describe("Caminho do arquivo editado ou aberto."),
       projectRoot: z.string().optional().describe("Raiz do projeto aberto no Cursor."),
@@ -39,7 +40,13 @@ export function registerEditMapTools(server: McpServer): void {
         }
       }
       const facts = projectRoot ? loadFacts(projectRoot, input.filePath) : {};
-      return mapTestsForEdit({ filePath: input.filePath, projectRoot, sourceCode, ...facts });
+      return mapTestsForEdit({
+        filePath: input.filePath,
+        projectRoot,
+        sourceCode,
+        profile: toolsetProfile(),
+        ...facts,
+      });
     },
   );
 }

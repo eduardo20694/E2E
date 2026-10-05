@@ -123,6 +123,9 @@ export interface SecurityChecklistInput extends ProjectContextInput {
   context?: string;
 }
 
+const OWNER_GAP =
+  "A rota tem id e o handler não mostra comparação de dono. A checagem pode estar no middleware. O teste não falha por isso.";
+
 export function suggestSecurityChecklist(input: SecurityChecklistInput): ToolTextResult {
   const blob = `${input.context ?? ""}\n${input.sourceCode ?? ""}\n${input.filePath ?? ""}`;
   if (!blob.trim()) {
@@ -133,11 +136,14 @@ export function suggestSecurityChecklist(input: SecurityChecklistInput): ToolTex
     const applies = new RegExp(pattern, "i").test(blob);
     return [id, name, applies ? "prioritário neste contexto" : "revisar mesmo assim", test];
   });
+  const source = input.sourceCode ?? "";
+  const ownerGap = extractRoutes(source).some((route) => routeHasId(route.path)) && !comparesOwner(source);
 
   return textResult(
     doc([
       "# Checklist OWASP Top 10 (2021) para teste",
       "Itens de verificação. Não são passos de ataque.",
+      ownerGap ? `> ${OWNER_GAP}` : undefined,
       markdownTable(["ID", "Risco", "No contexto", "Teste"], rows),
       citeKnowledge(["functional-vs-non-functional"]),
     ]),
@@ -230,11 +236,9 @@ export function buildSecurityApiTest(source: string, runner: "vitest" | "jest" =
   blocks.push(fetchHeaderTest(localUrl(target.path)));
   if (mentionsCors(source)) blocks.push(fetchCorsTest(localUrl(target.path), allowsCredentials(source)));
   const ownerGap = routes.some((route) => routeHasId(route.path)) && !comparesOwner(source);
-  if (ownerGap) blocks.push(ownerGapTest());
-
   const imported = runner === "jest" ? "@jest/globals" : "vitest";
-  const names = ownerGap ? "expect, it, test" : "expect, test";
-  return `import { ${names} } from ${JSON.stringify(imported)};\n\n${blocks.join("\n\n")}\n`;
+  const note = ownerGap ? `// ${OWNER_GAP}\n\n` : "";
+  return `import { expect, test } from ${JSON.stringify(imported)};\n\n${note}${blocks.join("\n\n")}\n`;
 }
 
 /** Spec Playwright da tela. A rota vem de `routeFromPage`. */
@@ -370,12 +374,6 @@ function fetchCorsTest(url: string, credentials: boolean): string {
   const origin = response.headers.get("access-control-allow-origin");
   const credentialsHeader = response.headers.get("access-control-allow-credentials");
   expect(origin === "https://exemplo-externo.test" && credentialsHeader === "true").toBe(false);
-});`;
-}
-
-function ownerGapTest(): string {
-  return `it("dono da rota", () => {
-  expect.fail("Rota com id sem comparação de dono no handler.");
 });`;
 }
 
@@ -531,7 +529,7 @@ export function registerNonFunctionalTools(server: McpServer): void {
     server,
     "suggest_performance_test_plan",
     "Plano de teste de performance",
-    "Carga grava `perf/carga.k6.js` e executa `k6 run` quando o script usa localhost ou 127.0.0.1 e o binário está no PATH; host externo, JMeter e Gatling gravam e não executam.",
+    "Carga grava `perf/carga.k6.js` e executa `k6 run` quando o script usa localhost ou 127.0.0.1 e o binário está no PATH; host externo, JMeter e Gatling gravam e não executam. Vitest, Jest, Playwright, ESLint, Stryker e Cucumber só rodam se já estão em `node_modules` (não baixam pacote). k6, npm, Bandit e Gosec são CLI de máquina, procurados no PATH. Não há `npx`.",
     {
       target: z.string().describe("URL ou nome do fluxo sob carga."),
       tool: z.enum(["k6", "jmeter", "gatling"]).optional(),
@@ -583,7 +581,7 @@ export function registerNonFunctionalTools(server: McpServer): void {
     server,
     "suggest_security_checklist",
     "Checklist de segurança",
-    "Segurança grava o checklist OWASP em `docs/qa/seguranca.md`. No front, grava e executa cabeçalho, cookie, CSRF e escape no localhost. Na API, grava e executa 401/403, cabeçalho, CORS quando o fonte tem CORS, e falha se rota com id não compara dono. Sem binário, grava e não executa.",
+    "Segurança grava o checklist OWASP em `docs/qa/seguranca.md`. No front, grava e executa cabeçalho, cookie, CSRF e escape no localhost. Na API, grava e executa 401/403, cabeçalho e CORS quando o fonte tem CORS. Se a rota tem id e o handler não mostra comparação de dono, o arquivo traz um aviso: a checagem pode estar no middleware. O teste não falha por isso. Sem binário, grava e não executa.",
     {
       context: z.string().optional().describe("Descrição do sistema ou da mudança."),
       sourceCode: z.string().optional(),

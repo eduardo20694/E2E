@@ -24,6 +24,8 @@ export interface WebRoute {
   validationStatus?: number;
   /** 401 ou 403 quando o handler mostra esse literal. */
   authStatus?: number;
+  /** Guarda, middleware de auth, ou 401/403 no próprio handler. */
+  requiresAuth?: boolean;
 }
 
 export interface ScreenComponent {
@@ -84,7 +86,20 @@ export function routeFromPage(filePath: string): string | undefined {
 
 export function extractRoutes(source: string, filePath?: string): WebRoute[] {
   const cleaned = stripNoise(source);
-  return dedupeRoutes([...expressRoutes(cleaned), ...nextRoutes(cleaned, filePath), ...clientRoutes(cleaned)]);
+  const fileAuth = hasAuthSignal(cleaned);
+  return dedupeRoutes([
+    ...expressRoutes(cleaned, fileAuth),
+    ...nextRoutes(cleaned, filePath, fileAuth),
+    ...clientRoutes(cleaned, fileAuth),
+  ]);
+}
+
+/** Middleware ou guarda. 401 solto no arquivo, fora do handler, não conta. */
+const AUTH_SIGNAL =
+  /\b(?:authenticate|requireAuth|passport|jwt|isAuthenticated|getServerSession|withAuth|login_required)\b|\bauth\b|\bsession\b|\bguard\b|\bprotected\b|@login_required|Depends\s*\(\s*get_current_user\s*\)/i;
+
+function hasAuthSignal(source: string): boolean {
+  return AUTH_SIGNAL.test(source);
 }
 
 export function exportedApp(source: string): "named" | "default" | undefined {
@@ -217,7 +232,7 @@ function walkTags(source: string, visit: (tag: string, attrs: string) => void): 
   }
 }
 
-function expressRoutes(source: string): WebRoute[] {
+function expressRoutes(source: string, fileAuth: boolean): WebRoute[] {
   const routes: WebRoute[] = [];
   const re = /\.(get|post|put|patch|delete|head)\s*\(\s*(['"`])(\/[^'"`]*)\2/gi;
   let match: RegExpExecArray | null;
@@ -226,13 +241,13 @@ function expressRoutes(source: string): WebRoute[] {
     const open = source.lastIndexOf("(", match.index + match[0].length);
     const close = skipBalanced(source, open, "(", ")");
     const handler = close < 0 ? source.slice(match.index + match[0].length) : source.slice(match.index + match[0].length, close);
-    routes.push(buildRoute(match[1], match[3], handler));
+    routes.push(buildRoute(match[1], match[3], handler, fileAuth));
   }
   return routes;
 }
 
 /** fetch e axios no mesmo arquivo da tela. Path literal; method do axios ou do init do fetch. */
-function clientRoutes(source: string): WebRoute[] {
+function clientRoutes(source: string, fileAuth: boolean): WebRoute[] {
   const routes: WebRoute[] = [];
   const fetchRe = /\bfetch\s*\(\s*(['"`])([^'"`]+)\1/g;
   let match: RegExpExecArray | null;
@@ -241,13 +256,13 @@ function clientRoutes(source: string): WebRoute[] {
     if (!path) continue;
     const tail = source.slice(match.index + match[0].length, match.index + match[0].length + 240);
     const method = /\bmethod\s*:\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD)['"`]/i.exec(tail)?.[1] ?? "GET";
-    routes.push({ method: method.toUpperCase(), path, status: 200, returnsJson: true });
+    routes.push({ method: method.toUpperCase(), path, status: 200, returnsJson: true, requiresAuth: fileAuth });
   }
   const axiosRe = /\baxios\.(get|post|put|patch|delete|head)\s*\(\s*(['"`])([^'"`]+)\2/gi;
   while ((match = axiosRe.exec(source))) {
     const path = clientPath(match[3]);
     if (!path) continue;
-    routes.push({ method: match[1].toUpperCase(), path, status: 200, returnsJson: true });
+    routes.push({ method: match[1].toUpperCase(), path, status: 200, returnsJson: true, requiresAuth: fileAuth });
   }
   const axiosCall = /\baxios\s*\(\s*\{/g;
   while ((match = axiosCall.exec(source))) {
@@ -260,7 +275,7 @@ function clientRoutes(source: string): WebRoute[] {
     const path = clientPath(url[2]);
     if (!path) continue;
     const method = /\bmethod\s*:\s*['"`](GET|POST|PUT|PATCH|DELETE|HEAD)['"`]/i.exec(body)?.[1] ?? "GET";
-    routes.push({ method: method.toUpperCase(), path, status: 200, returnsJson: true });
+    routes.push({ method: method.toUpperCase(), path, status: 200, returnsJson: true, requiresAuth: fileAuth });
   }
   return routes;
 }
@@ -276,14 +291,14 @@ function clientPath(raw: string): string | undefined {
   }
 }
 
-function nextRoutes(source: string, filePath?: string): WebRoute[] {
+function nextRoutes(source: string, filePath: string | undefined, fileAuth: boolean): WebRoute[] {
   const path = routeFromApiFile(filePath);
   if (!path) return [];
   const routes: WebRoute[] = [];
   const re = /export\s+(?:async\s+)?function\s+(GET|POST|PUT|PATCH|DELETE|HEAD)\b/g;
   let match: RegExpExecArray | null;
   while ((match = re.exec(source))) {
-    routes.push(buildRoute(match[1], path, readFunctionBody(source, match.index + match[0].length)));
+    routes.push(buildRoute(match[1], path, readFunctionBody(source, match.index + match[0].length), fileAuth));
   }
   return routes;
 }
@@ -298,17 +313,18 @@ function routeFromApiFile(filePath?: string): string | undefined {
   return undefined;
 }
 
-function buildRoute(methodRaw: string, path: string, handler: string): WebRoute {
+function buildRoute(methodRaw: string, path: string, handler: string, fileAuth: boolean): WebRoute {
   const method = methodRaw.toUpperCase();
   const literals = statusLiterals(handler);
   const success = literals.filter((code) => code >= 200 && code < 300);
   const status = success.at(-1) ?? literals.at(-1) ?? defaultStatus(method);
-  const mentionsSchema = /\bzod\b/i.test(handler) || /\bz\.(?:object|string|number|array|enum)\b/.test(handler) || /\bsafeParse\b/.test(handler) || /\bschema\b/i.test(handler);
-  const validationStatus = (literals.includes(400) || mentionsSchema) && status !== 400 ? 400 : undefined;
+  const validationCandidates = [422, 400].filter((code) => literals.includes(code) && code !== status);
+  const validationStatus = validationCandidates[0];
   let authStatus: number | undefined;
   if (literals.includes(401)) authStatus = 401;
   else if (literals.includes(403)) authStatus = 403;
   if (authStatus === status) authStatus = undefined;
+  const handlerDeclaresAuth = literals.includes(401) || literals.includes(403);
   return {
     method,
     path,
@@ -316,6 +332,7 @@ function buildRoute(methodRaw: string, path: string, handler: string): WebRoute 
     returnsJson: returnsJson(handler),
     validationStatus,
     authStatus,
+    requiresAuth: handlerDeclaresAuth || hasAuthSignal(handler) || fileAuth,
   };
 }
 

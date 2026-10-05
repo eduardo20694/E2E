@@ -25,6 +25,7 @@ import { registerStrategyTools } from "./strategy.js";
 import { registerTestDataTools } from "./test-data.js";
 import { registerTestPlanTools } from "./test-plan.js";
 import { registerUnitTools } from "./unit.js";
+import { beginToolRegistration, endToolRegistration } from "../lib/register-tool.js";
 import { registerVisualTools } from "./visual-regression.js";
 
 export const TOOL_NAMES = [
@@ -34,11 +35,7 @@ export const TOOL_NAMES = [
   "generate_e2e_test",
   "generate_api_test",
   "generate_mobile_test",
-  "boundary_value_analysis",
-  "equivalence_partitioning",
-  "decision_table",
-  "state_transition_test",
-  "pairwise_test_generator",
+  "design_test_cases",
   "suggest_performance_test_plan",
   "suggest_security_checklist",
   "suggest_accessibility_audit",
@@ -62,8 +59,6 @@ export const TOOL_NAMES = [
   "generate_traceability_matrix",
   "suggest_test_pyramid_balance",
   "risk_based_prioritization",
-  "shift_left_right_recommendations",
-  "environment_strategy_advisor",
   "generate_synthetic_data",
   "suggest_data_masking_strategy",
   "suggest_seeding_strategy",
@@ -76,15 +71,12 @@ export const TOOL_NAMES = [
   "suggest_sca_setup",
   "generate_i18n_test",
   "setup_disaster_recovery_test",
-  "suggest_compliance_checklist",
   "suggest_model_testing_plan",
   "suggest_ab_test_design",
   "generate_llm_prompt_test",
   "suggest_test_impact_analysis",
   "suggest_test_parallelization",
   "suggest_flaky_test_quarantine",
-  "suggest_test_management_tool",
-  "suggest_reporting_setup",
   "setup_consumer_driven_contracts",
   "calculate_cost_of_quality",
   "suggest_automation_roi",
@@ -94,7 +86,38 @@ export const TOOL_NAMES = [
   "diagnose_test_report",
 ] as const;
 
+/** Perfil padrão: quem edita um arquivo e pede teste. */
+export const CORE_TOOL_NAMES = [
+  "map_tests_for_edit",
+  "read_workspace",
+  "generate_unit_test",
+  "generate_integration_test",
+  "generate_e2e_test",
+  "generate_api_test",
+  "setup_consumer_driven_contracts",
+  "design_test_cases",
+  "suggest_security_checklist",
+  "suggest_accessibility_audit",
+  "suggest_sast_setup",
+  "suggest_sca_setup",
+  "code_coverage_advisor",
+  "flakiness_analyzer",
+  "diagnose_test_report",
+  "suggest_test_pyramid_balance",
+  "suggest_test_impact_analysis",
+  "write_test_file",
+  "run_project_tests",
+  "visual_regression_setup",
+] as const;
+
+export function toolsetProfile(): "core" | "full" {
+  return process.env.E2E_TOOLSET?.trim().toLowerCase() === "full" ? "full" : "core";
+}
+
 export function registerAllTools(server: McpServer): void {
+  const full = toolsetProfile() === "full";
+  beginToolRegistration(full ? null : CORE_TOOL_NAMES, !full);
+  try {
   registerEditMapTools(server);
   registerUnitTools(server);
   registerIntegrationTools(server);
@@ -122,4 +145,7 @@ export function registerAllTools(server: McpServer): void {
   registerContractAdvancedTools(server);
   registerEconomicsTools(server);
   registerExecutionTools(server);
+  } finally {
+    endToolRegistration();
+  }
 }

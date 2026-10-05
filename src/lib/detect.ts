@@ -35,6 +35,8 @@ export interface DetectedStack {
   observability: string[];
   /** Bibliotecas já presentes: faker, fast-check, hypothesis, eslint, pact, allure. */
   libraries: string[];
+  /** Pacote de Component Testing do Playwright, se o package.json declara. */
+  componentTesting?: "@playwright/experimental-ct-react" | "playwright-ct";
   notes: string[];
 }
 
@@ -181,6 +183,11 @@ export function detectStack(projectRoot?: string): DetectedStack {
     if (hasAny(deps, ['"@playwright/test"', '"playwright"'])) {
       pushUnique(stack.e2eFrameworks, "playwright");
     }
+    if (hasAny(deps, ["@playwright/experimental-ct-react"])) {
+      stack.componentTesting = "@playwright/experimental-ct-react";
+    } else if (hasAny(deps, ['"playwright-ct"'])) {
+      stack.componentTesting = "playwright-ct";
+    }
     if (hasAny(deps, ['"cypress"'])) pushUnique(stack.e2eFrameworks, "cypress");
     if (hasAny(deps, ["selenium-webdriver"])) pushUnique(stack.e2eFrameworks, "selenium");
     if (hasAny(deps, ["supertest", '"pact"', "@pact-foundation"])) {
@@ -309,10 +316,61 @@ function scanDelivery(stack: DetectedStack, root: string): void {
   }
 }
 
+/**
+ * Vitest e Jest juntos: o teste irmão manda. Senão vitest se estiver no projeto,
+ * senão jest, senão vitest.
+ */
+export function resolveJsRunner(options: {
+  projectRoot?: string;
+  filePath?: string;
+  stack?: DetectedStack;
+  requested?: UnitFramework;
+}): "vitest" | "jest" {
+  if (options.requested === "jest" || options.requested === "vitest") return options.requested;
+  const stack = options.stack ?? detectStack(options.projectRoot);
+  const hasVitest = stack.unitFrameworks.includes("vitest");
+  const hasJest = stack.unitFrameworks.includes("jest");
+  if (hasVitest && hasJest) {
+    return siblingJsRunner(stack.root ?? options.projectRoot, options.filePath) ?? "vitest";
+  }
+  if (hasJest) return "jest";
+  return "vitest";
+}
+
+function siblingJsRunner(projectRoot?: string, filePath?: string): "vitest" | "jest" | undefined {
+  if (!projectRoot || !filePath) return undefined;
+  const normalized = filePath.replace(/\\/g, "/").replace(/^\.\//, "");
+  const slash = normalized.lastIndexOf("/");
+  const dir = slash >= 0 ? normalized.slice(0, slash) : "";
+  const base = slash >= 0 ? normalized.slice(slash + 1) : normalized;
+  const dot = base.lastIndexOf(".");
+  if (dot <= 0) return undefined;
+  const ext = base.slice(dot).toLowerCase();
+  if (ext !== ".ts" && ext !== ".tsx" && ext !== ".js" && ext !== ".jsx") return undefined;
+  const stem = base.slice(0, dot);
+  const root = path.resolve(projectRoot);
+  for (const name of [`${stem}.test${ext}`, `${stem}.spec${ext}`]) {
+    const full = path.join(root, dir, name);
+    let text = "";
+    try {
+      if (!fs.existsSync(full) || !fs.statSync(full).isFile()) continue;
+      text = fs.readFileSync(full, "utf8").slice(0, 8000);
+    } catch {
+      continue;
+    }
+    const vitest = /from\s+["']vitest["']/.test(text) || /require\(\s*["']vitest["']\s*\)/.test(text);
+    const jest = /from\s+["']@jest\/globals["']/.test(text) || /from\s+["']jest["']/.test(text);
+    if (jest && !vitest) return "jest";
+    if (vitest) return "vitest";
+  }
+  return undefined;
+}
+
 export function chooseUnitFramework(
   requested: UnitFramework | undefined,
   stack: DetectedStack,
   language: Language,
+  filePath?: string,
 ): { framework: UnitFramework; warning?: string } {
   const detected = stack.unitFrameworks[0];
   if (requested) {
@@ -330,6 +388,16 @@ export function chooseUnitFramework(
       };
     }
     return { framework: requested };
+  }
+
+  if (
+    (language === "typescript" || language === "javascript") &&
+    stack.unitFrameworks.includes("vitest") &&
+    stack.unitFrameworks.includes("jest")
+  ) {
+    const sibling = siblingJsRunner(stack.root, filePath);
+    if (sibling) return { framework: sibling };
+    return { framework: "vitest" };
   }
 
   if (detected) return { framework: detected };

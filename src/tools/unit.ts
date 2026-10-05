@@ -43,7 +43,7 @@ export function buildUnitTest(input: GenerateUnitTestInput): BuiltUnitTest {
 
   const language = inferLanguage(input.sourceCode, input.filePath ?? input.language);
   const stack = detectStack(input.projectRoot);
-  const choice = chooseUnitFramework(input.framework, stack, language);
+  const choice = chooseUnitFramework(input.framework, stack, language, input.filePath);
   const symbols = extractSymbols(input.sourceCode);
   const imports = extractImports(input.sourceCode);
   const moduleName = moduleNameFromPath(input.filePath);
@@ -71,6 +71,9 @@ export function buildUnitTest(input: GenerateUnitTestInput): BuiltUnitTest {
       "Camada **mockada**. Sem rede, sem banco e sem produção. Dependência externa vira dublê.",
       choice.warning ? `> ${choice.warning}` : undefined,
       `**Framework:** ${choice.framework}`,
+      choice.framework === "junit" || choice.framework === "go" || choice.framework === "rspec"
+        ? "Go, Java e Ruby gravam o arquivo. O runner local não executa go test, JUnit nem RSpec."
+        : undefined,
       `**Linguagem inferida:** ${language}`,
       `**Arquivo sugerido:** \`${rendered.fileName}\``,
       "## Stack detectada",
@@ -87,7 +90,9 @@ export function buildUnitTest(input: GenerateUnitTestInput): BuiltUnitTest {
       "## O que o teste verde significa",
       rendered.code.includes("@testing-library/react")
         ? "O teste renderiza o componente e afirma os controles extraídos do arquivo."
-        : "- O teste verde ou confere o valor derivado do return puro, ou ainda não teve o contrato preenchido.",
+        : /\.(?:toBe|toEqual)\(/.test(rendered.code)
+          ? "Isto é teste de caracterização. Trava o comportamento atual, inclusive bug. Não prova que a regra de negócio está correta."
+          : "- O teste verde ou confere o valor derivado do return puro, ou ainda não teve o contrato preenchido.",
       "- Acrescente partições de equivalência e limites se a função tiver números ou datas.",
       "- Um teste unitário não sobe banco, rede nem browser.",
       citeKnowledge(["unit-testing", "tdd", "black-white-gray-box"]),
@@ -108,7 +113,7 @@ export function registerUnitTools(server: McpServer): void {
     server,
     "generate_unit_test",
     "Gerar teste unitário",
-    "Unitário grava e executa no runner local o teste (`*.test.ts`, `test_*.py`, `*Test.java`, `*_spec.rb` ou `*_test.go`): o verde confere o valor derivado do return puro, ou falha até o contrato estar preenchido.",
+    "Unitário grava e executa Vitest, Jest e pytest. Go, Java e Ruby gravam o arquivo e avisam que o runner local não executa go test, JUnit nem RSpec. Quando o oracle avalia um return puro e emite toBe ou toEqual, isto é teste de caracterização: trava o comportamento atual, inclusive bug, e não prova que a regra de negócio está correta. Lacuna é test.fixme no Playwright (com callback), test.todo no Vitest e no Jest (só a descrição, sem função) e @pytest.mark.skip no pytest. Corpo opaco é expect.fail no Vitest, throw new Error no Jest e pytest.fail no pytest.",
     {
       sourceCode: z.string().optional().describe("Código da função ou classe. Se vazio, lê filePath do disco."),
       framework: frameworkEnum.optional().describe("Framework pedido. Se omitido, usa o que estiver no projeto."),

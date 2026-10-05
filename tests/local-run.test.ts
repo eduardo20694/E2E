@@ -84,11 +84,12 @@ describe("execução local fechada", () => {
     expect(writtenSpec).not.toContain("OR 1=1");
   });
 
-  it("falha o dono quando a rota com id não compara o usuário", async () => {
+  it("avisa o dono sem falhar quando a rota com id não compara o usuário", async () => {
     const pedidos = 'app.get("/pedidos/:id", (_req, res) => { res.json({ ok: true }); });';
     const code = buildSecurityApiTest(pedidos);
-    expect(code).toContain("expect.fail");
-    expect(code).toContain("Rota com id sem comparação de dono no handler.");
+    expect(code).not.toContain("expect.fail");
+    expect(code).toContain("pode estar no middleware");
+    expect(code).toContain("O teste não falha por isso.");
     expect(code).toContain("content-security-policy");
     expect(code).not.toContain("OR 1=1");
     expect(code).not.toContain("<script>");
@@ -103,8 +104,9 @@ describe("execução local fechada", () => {
     });
     expect(result.isError).toBeFalsy();
     const written = fs.readFileSync(path.join(root, "security.api.test.ts"), "utf8");
-    expect(written).toContain("expect.fail");
-    expect(written).toContain("Rota com id sem comparação de dono no handler.");
+    expect(written).not.toContain("expect.fail");
+    expect(written).toContain("pode estar no middleware");
+    expect(written).toContain("O teste não falha por isso.");
     expect(written).not.toContain("OR 1=1");
     expect(written).not.toContain("<script>");
     expect(written).not.toContain("169.254.169.254");
@@ -119,6 +121,7 @@ describe("execução local fechada", () => {
     const code = buildSecurityApiTest(source);
     expect(code).toContain("toBe(403)");
     expect(code).not.toContain("expect.fail");
+    expect(code).not.toContain("pode estar no middleware");
   });
 
   it("inclui cookie, csrf e CORS só quando o fonte mostra isso", () => {

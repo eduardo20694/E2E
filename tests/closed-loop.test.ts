@@ -30,6 +30,8 @@ describe("ciclo fechado", () => {
     expect(() => writeProjectFile(root, "data.json", "{}")).toThrow(/lista permitida/);
     const fixture = writeProjectFile(root, "tests/fixtures/user.json", "{}");
     expect(fs.existsSync(fixture)).toBe(true);
+    const mocked = writeProjectFile(root, "e2e/flow.mocked.spec.ts", "test('tela @mocked', () => {})");
+    expect(fs.existsSync(mocked)).toBe(true);
   });
 
   it("grava integração sem flag quando a raiz existe", async () => {
