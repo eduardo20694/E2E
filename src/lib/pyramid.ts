@@ -5,9 +5,11 @@ export interface PyramidCounts {
   unit: number;
   integration: number;
   e2e: number;
-  /** Tela mockada. Fora de unit, integration e e2e. */
+  /** Tela mockada legado (@mocked). Fora de unit, integration e e2e. */
   mocked: number;
-  files: { unit: string[]; integration: string[]; e2e: string[]; mocked: string[] };
+  /** UI com API mockada (@network-mock). Fora de unit, integration e e2e. */
+  networkMock: number;
+  files: { unit: string[]; integration: string[]; e2e: string[]; mocked: string[]; networkMock: string[] };
 }
 
 const SKIP = new Set([
@@ -66,7 +68,8 @@ export function scanPyramid(projectRoot: string, maxDepth = 6): PyramidCounts {
     integration: 0,
     e2e: 0,
     mocked: 0,
-    files: { unit: [], integration: [], e2e: [], mocked: [] },
+    networkMock: 0,
+    files: { unit: [], integration: [], e2e: [], mocked: [], networkMock: [] },
   };
 
   if (!fs.existsSync(root)) {
@@ -104,9 +107,11 @@ function walk(root: string, current: string, depth: number, maxDepth: number, co
 
 const MOCK_READ = 65_536;
 
-function classify(relative: string, fullPath: string): "unit" | "integration" | "e2e" | "mocked" {
+function classify(relative: string, fullPath: string): "unit" | "integration" | "e2e" | "mocked" | "networkMock" {
   const value = relative.toLowerCase();
-  if (value.includes(".mocked.") || readHead(fullPath).includes("@mocked")) return "mocked";
+  const head = readHead(fullPath);
+  if (head.includes("@network-mock")) return "networkMock";
+  if (value.includes(".mocked.") || head.includes("@mocked")) return "mocked";
   if (/e2e|cypress|playwright|selenium|acceptance|features\/.+\\.feature/.test(value) || value.endsWith(".feature")) {
     return "e2e";
   }

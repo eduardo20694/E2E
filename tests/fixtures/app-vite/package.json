@@ -1,0 +1,7 @@
+{
+  "name": "app-vite-fixture",
+  "private": true,
+  "scripts": {
+    "dev": "vite"
+  }
+}

@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -36,27 +35,27 @@ describe("teste de site a partir do arquivo", () => {
     const e2e = text(
       await generateE2eTest({ sourceCode: checkout, filePath: checkoutPath, baseUrl: "https://app.example.com" }),
     );
-    expect(e2e).toContain("/checkout");
+    expect(e2e).toContain("/Checkout");
     expect(e2e).toContain("Pagar");
-    expect(e2e).toContain("tela mockada");
-    expect(e2e).toContain("flow.mocked.spec.ts");
-    expect(e2e).toContain("@mocked");
+    expect(e2e).toContain("checkout.spec.ts");
+    expect(e2e).toContain("@network-mock");
+    expect(e2e).not.toContain("flow.mocked.spec.ts");
     expect(e2e).not.toContain("flow.spec.ts");
-    expect(e2e).not.toMatch(/Teste E2E/);
-    expect(e2e).toContain("route.fulfill");
-    expect(e2e).toContain("<button>Pagar</button>");
+    expect(e2e).not.toContain("contentType: \"text/html\"");
+    expect(e2e).not.toContain('resourceType() === "document"');
+    expect(e2e).toContain("page.route");
+    expect(e2e).toContain("**/api/**");
     expect(e2e).toContain('await expect(page.getByRole("button", { name: "Pagar" })).toBeVisible();');
-    expect(e2e).toContain("mocked");
+    expect(e2e).not.toMatch(/getByRole\("button", \{ name: "Pagar" \}\)\)\.click/);
     expect(e2e).not.toContain("route.continue");
     expect(e2e).not.toContain("https://app.example.com");
-    expect(e2e).toContain("http://127.0.0.1:3000");
     expect(e2e.toLowerCase()).not.toContain("painel");
     expect(e2e.toLowerCase()).not.toContain("staging");
 
     const audit = text(
       suggestAccessibilityAudit({ filePath: checkoutPath, sourceCode: checkout, baseUrl: "http://127.0.0.1:3000" }),
     );
-    expect(audit).toContain("/checkout");
+    expect(audit).toContain("/Checkout");
   });
 
   it("afirma o status 200 de GET /health e não uma lista", () => {
@@ -121,37 +120,23 @@ describe("componente sem rota de página", () => {
       await generateE2eTest({ sourceCode: button, filePath: "src/components/Button.tsx", baseUrl: "http://127.0.0.1:3000" }),
     );
     expect(body).toContain("não uso o localhost como E2E live");
-    expect(body).toContain("flow.mocked.spec.ts");
-    expect(body).toContain("@mocked");
-    expect(body).not.toContain("page.goto na URL real");
+    expect(body).toContain("button.spec.ts");
+    expect(body).toContain("@network-mock");
+    expect(body).not.toContain("flow.mocked.spec.ts");
     expect(body).not.toContain("flow.spec.ts");
   });
 
-  it("só trata a página como live quando o GET da rota responde 2xx", async () => {
-    const probe = async (status: number) => {
-      const server = http.createServer((req, res) => {
-        res.statusCode = req.url === "/checkout" ? status : 404;
-        res.end("ok");
-      });
-      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-      const address = server.address();
-      const port = address && typeof address === "object" ? address.port : 0;
-      try {
-        return text(
-          await generateE2eTest({
-            sourceCode: checkout,
-            filePath: checkoutPath,
-            baseUrl: `http://127.0.0.1:${port}`,
-          }),
-        );
-      } finally {
-        await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
-      }
-    };
-
-    expect(await probe(404)).not.toContain("page.goto na URL real");
-    expect(await probe(302)).not.toContain("page.goto na URL real");
-    expect(await probe(200)).toContain("page.goto na URL real");
+  it("com mockNetwork false gera spec live sem mock de API e sem clique em botão", async () => {
+    const body = text(
+      await generateE2eTest({
+        sourceCode: checkout,
+        filePath: checkoutPath,
+        mockNetwork: false,
+      }),
+    );
+    expect(body).toContain("backend real");
+    expect(body).not.toContain("page.route");
+    expect(body).not.toMatch(/getByRole\("button"[\s\S]*\.click/);
   });
 });
 
@@ -159,8 +144,9 @@ describe("mapa da tela e do handler", () => {
   it("ordena o componente e omite regressão visual sem a stack", () => {
     const tools = recommended(text(mapTestsForEdit({ filePath: checkoutPath })));
     expect(tools).toEqual([
-      "generate_unit_test",
       "generate_e2e_test",
+      "visual_regression_setup",
+      "generate_unit_test",
       "suggest_accessibility_audit",
       "suggest_security_checklist",
       "suggest_sast_setup",
@@ -190,12 +176,12 @@ describe("mapa da tela e do handler", () => {
     );
     const ui = recommended(text(mapTestsForEdit({ filePath: checkoutPath, projectRoot: root })));
     expect(ui).toEqual([
-      "generate_unit_test",
       "generate_e2e_test",
+      "visual_regression_setup",
+      "generate_unit_test",
       "suggest_accessibility_audit",
       "suggest_security_checklist",
       "suggest_sast_setup",
-      "visual_regression_setup",
     ]);
     const api = recommended(
       text(
@@ -218,14 +204,15 @@ describe("mapa da tela e do handler", () => {
 
   it("descreve os gates na matriz gerada pelas camadas", () => {
     const matrix = layerMatrixMarkdown();
-    const ui = matrix.split("\n").find((line) => line.startsWith("| UI |"));
+    const ui = matrix.split("\n").find((line) => line.startsWith("| Tela |"));
     const api = matrix.split("\n").find((line) => line.startsWith("| API |"));
     expect(ui).toBeTruthy();
     expect(api).toBeTruthy();
-    expect(ui!.indexOf("generate_unit_test")).toBeLessThan(ui!.indexOf("generate_e2e_test"));
+    expect(ui!.indexOf("generate_e2e_test")).toBeLessThan(ui!.indexOf("visual_regression_setup"));
+    expect(ui!.indexOf("visual_regression_setup")).toBeLessThan(ui!.indexOf("generate_unit_test"));
+    expect(ui!.indexOf("generate_unit_test")).toBeLessThan(ui!.indexOf("suggest_accessibility_audit"));
     expect(ui!.indexOf("suggest_accessibility_audit")).toBeLessThan(ui!.indexOf("suggest_security_checklist"));
     expect(ui!.indexOf("suggest_security_checklist")).toBeLessThan(ui!.indexOf("suggest_sast_setup"));
-    expect(ui!).toContain("percy, chromatic, applitools ou Storybook");
     expect(api!.indexOf("generate_api_test")).toBeLessThan(api!.indexOf("generate_integration_test"));
     expect(api!.indexOf("generate_integration_test")).toBeLessThan(api!.indexOf("suggest_security_checklist"));
     expect(api!.indexOf("suggest_security_checklist")).toBeLessThan(api!.indexOf("suggest_sast_setup"));

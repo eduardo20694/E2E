@@ -51,6 +51,8 @@ describe("map_tests_for_edit", () => {
     expect(tools).toContain("suggest_sast_setup");
     expect(body).toContain("e2e://map");
     expect(body).toContain("e2e://knowledge/e2e-testing");
+    expect(tools[0]).toBe("generate_e2e_test");
+    expect(tools[1]).toBe("visual_regression_setup");
     expect(tools.indexOf("generate_e2e_test")).toBeLessThan(tools.indexOf("suggest_accessibility_audit"));
     expect(tools.indexOf("suggest_accessibility_audit")).toBeLessThan(tools.indexOf("suggest_security_checklist"));
     expect(tools.indexOf("suggest_security_checklist")).toBeLessThan(tools.indexOf("suggest_sast_setup"));

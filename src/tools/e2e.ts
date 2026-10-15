@@ -4,16 +4,29 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { renderE2eTest } from "../lib/codegen.js";
 import { chooseE2eFramework, detectStack, resolveJsRunner, stackSummary, type E2eFramework } from "../lib/detect.js";
+import {
+  playwrightClockSupported,
+  readPlaywrightMeta,
+  webServerSnippet,
+  type RenderedFrontTest,
+} from "../lib/front-spec.js";
 import { codeBlock, doc, splitSteps } from "../lib/format.js";
 import { citeKnowledge } from "../lib/knowledge.js";
 import { registerTool } from "../lib/register-tool.js";
 import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
+import type { TestRunner } from "../lib/runner.js";
 import type { ProjectContextInput } from "../lib/schema.js";
 import { runShape, writeShape } from "../lib/schema.js";
-import { extractUi, routeFromPage, screenComponent } from "../lib/web.js";
+import {
+  detectsSsr,
+  extractUi,
+  resolvePageRoute,
+  screenComponent,
+  slugFor,
+} from "../lib/web.js";
+import { resolveInside, writeProjectFile } from "../lib/workspace.js";
 import { persistGenerated } from "./execution.js";
 import { hydrateSource, shouldRun, shouldWrite } from "./loop.js";
-import type { TestRunner } from "../lib/runner.js";
 
 export interface GenerateE2eTestInput extends ProjectContextInput {
   userFlow?: string;
@@ -22,13 +35,21 @@ export interface GenerateE2eTestInput extends ProjectContextInput {
   writeToProject?: boolean;
   run?: boolean;
   overwrite?: boolean;
+  route?: string;
+  routeParams?: Record<string, string>;
+  apiPattern?: string;
+  mockNetwork?: boolean;
 }
 
 export interface BuiltE2eTest {
   result: ToolTextResult;
   code?: string;
   fileName?: string;
+  folder?: string;
   framework?: E2eFramework;
+  fixtures?: RenderedFrontTest["fixtures"];
+  ctConfig?: string;
+  updateSnapshots?: boolean;
 }
 
 function outsideBase(baseUrl?: string): boolean {
@@ -129,8 +150,8 @@ function loopbackBase(raw: string | undefined, projectRoot?: string): { base: st
 }
 
 async function serverResponds(base: string, route?: string): Promise<boolean> {
-  const path = route && route !== "/" ? route : "/";
-  const url = `${base.replace(/\/$/, "")}${path.startsWith("/") ? path : `/${path}`}`;
+  const pathName = route && route !== "/" ? route : "/";
+  const url = `${base.replace(/\/$/, "")}${pathName.startsWith("/") ? pathName : `/${pathName}`}`;
   try {
     const response = await fetch(url, { method: "GET", signal: AbortSignal.timeout(PROBE_MS), redirect: "manual" });
     return response.status >= 200 && response.status < 300;
@@ -140,8 +161,7 @@ async function serverResponds(base: string, route?: string): Promise<boolean> {
 }
 
 export async function buildE2eTest(input: GenerateE2eTestInput): Promise<BuiltE2eTest> {
-  const controls = extractUi(input.sourceCode ?? "");
-  const route = input.filePath ? routeFromPage(input.filePath) : undefined;
+  const controls = extractUi(input.sourceCode ?? "", { projectRoot: input.projectRoot });
   const steps = input.userFlow?.trim() ? splitSteps(input.userFlow) : [];
   if (controls.length === 0 && steps.length === 0) {
     return {
@@ -160,87 +180,195 @@ export async function buildE2eTest(input: GenerateE2eTestInput): Promise<BuiltE2
 
   const stack = detectStack(input.projectRoot);
   const choice = chooseE2eFramework(input.framework, stack);
-  const fromScreen = controls.length > 0;
   const located = loopbackBase(input.baseUrl, input.projectRoot);
   const component = screenComponent(input.sourceCode ?? "", input.filePath);
-  const isPage = Boolean(route);
-  const live = isPage ? await serverResponds(located.base, route) : false;
-  const mode = !isPage
-    ? stack.componentTesting && component
-      ? "component"
-      : "mocked"
-    : live
-      ? "live"
-      : stack.componentTesting && component
-        ? "component"
-        : "mocked";
+  const resolved = resolvePageRoute({
+    filePath: input.filePath,
+    projectRoot: input.projectRoot,
+    route: input.route,
+    routeParams: input.routeParams,
+    componentName: component?.name,
+  });
+  const isPage = Boolean(resolved.path || resolved.pattern);
+  const mockNetwork = input.mockNetwork !== false;
+  const ctMeta = readPlaywrightMeta(input.projectRoot, true);
+  const pwMeta = readPlaywrightMeta(input.projectRoot, false);
+  const mode = !isPage && stack.componentTesting && component
+    ? "component"
+    : isPage && mockNetwork
+      ? "network"
+      : isPage && !mockNetwork
+        ? "live"
+        : stack.componentTesting && component
+          ? "component"
+          : "network";
+  const meta = mode === "component" ? ctMeta : pwMeta;
+  const slug = slugFor(resolved.pattern ?? resolved.path, component?.name, input.filePath);
+  const liveNow = isPage ? await serverResponds(located.base, resolved.path) : false;
   const jsRunner = resolveJsRunner({ projectRoot: input.projectRoot, filePath: input.filePath, stack });
+  const framework = mode === "component" || mode === "live" ? "playwright" : choice.framework;
   const rendered = renderE2eTest({
-    framework: mode === "mocked" ? choice.framework : "playwright",
+    framework,
     steps,
     baseUrl: located.base,
-    title: steps[0] ?? (route ? `tela ${route}` : "fluxo principal"),
+    title: steps[0] ?? (resolved.path ? `tela ${resolved.path}` : "fluxo principal"),
     controls,
-    route: isPage ? route : undefined,
+    route: resolved.path,
     sourceCode: input.sourceCode,
     filePath: input.filePath,
     mode,
+    mockNetwork,
     componentName: component?.name,
     componentDefaultExport: component?.defaultExport,
     ctPackage: stack.componentTesting,
     runner: jsRunner,
+    apiPattern: input.apiPattern,
+    projectRoot: input.projectRoot,
+    testDir: meta.testDir,
+    slug,
+    hasClock: playwrightClockSupported(input.projectRoot),
   });
+  const ssr = detectsSsr(input.sourceCode ?? "", input.filePath);
   const heading =
     mode === "live"
-      ? `# E2E local — ${choice.framework}`
+      ? `# E2E local — ${framework}`
       : mode === "component"
         ? "# Component testing"
-        : "# Tela mockada";
+        : "# Página real, API mockada";
   const lead =
     mode === "live"
-      ? "E2E local. O Playwright faz page.goto na URL real e toBeVisible nos controles. O documento não passa por route.fulfill. A página não é mockada."
+      ? "Spec contra o backend real, sem mock de rede. Sem clique em botão."
       : mode === "component"
         ? "Isto é component testing, não um browser contra o servidor. O teste monta o componente exportado com mount."
-        : "Isto é tela mockada. Não passa por bundler, roteador, estado, CSS nem hidratação.";
+        : "Página real com a API mockada. O documento, o CSS e os scripts vêm do dev server. O teste falha quando o componente muda.";
+  const notes = [
+    ...rendered.notes,
+    liveNow ? "O servidor responde agora no localhost." : "O servidor não respondeu agora. O teste só roda com o dev server no ar.",
+    !meta.hasWebServer && mode !== "component"
+      ? `Não achei webServer na config do Playwright. Acrescente:\n\n\`\`\`ts\n${webServerSnippet(input.projectRoot)}\n\`\`\`\n\nO teste só roda com o servidor de pé.`
+      : undefined,
+    resolved.assumed ? `A rota \`${resolved.path}\` foi suposta. Passe o input route se estiver errada.` : undefined,
+    resolved.guessedFromPages && !resolved.assumed ? "A rota saiu de src/pages sem Next no package.json. Confira o roteador." : undefined,
+    resolved.paramsUsed && Object.keys(resolved.paramsUsed).length
+      ? `Parâmetros da rota: ${Object.entries(resolved.paramsUsed)
+          .map(([key, value]) => `${key}=${value}`)
+          .join(", ")}.`
+      : undefined,
+    ssr
+      ? "page.route não intercepta fetch do servidor. A API precisa apontar para um mock local via variável de ambiente. No perfil full, use setup_service_virtualization."
+      : undefined,
+    rendered.skippedClicks.length
+      ? `Cliques pulados (destrutivo ou saída): ${rendered.skippedClicks.map((item) => `"${item}"`).join(", ")}.`
+      : undefined,
+    rendered.conditionalControls.length
+      ? `Aparecem só sob condição: ${rendered.conditionalControls.map((item) => `"${item}"`).join(", ")}.`
+      : undefined,
+    rendered.missingStaticText.length ? `Controles sem texto estático: ${rendered.missingStaticText.join(", ")}.` : undefined,
+    "A fixture em tests/fixtures é para você editar. Se o arquivo já existir, reaproveito.",
+  ].filter(Boolean);
 
   return {
     result: textResult(
-    doc([
-      heading,
-      lead,
-      input.filePath && !isPage
-        ? "Este arquivo não é página (`pages/` ou `app/.../page`). Não invento URL e não uso o localhost como E2E live."
-        : undefined,
-      `**Arquivo:** \`${rendered.fileName}\``,
-      located.portNote ? `> ${located.portNote}` : undefined,
-      choice.warning ? `> ${choice.warning}` : undefined,
-      stack.e2eFrameworks.length
-        ? `Framework detectado no projeto: ${stack.e2eFrameworks.join(", ")}.`
-        : "Nenhum Cypress, Playwright ou Selenium detectado. O padrão adotado é Playwright.",
-      "## Stack detectada",
-      stackSummary(stack),
-      "## Passos do fluxo",
-      steps.map((step, index) => `${index + 1}. ${step}`).join("\n"),
-      "## Código",
-      codeBlock(rendered.language, rendered.code),
-      "## Estabilidade",
-      "- Um fluxo por teste, no caminho de maior risco.",
-      "- Localizadores por papel acessível ou data-testid.",
-      "- Espere estado, não um sleep fixo.",
-      fromScreen
-        ? `O teste usa os controles e a rota do arquivo${route ? ` (\`${route}\`)` : ""}.${steps.length ? " O userFlow entra junto com esses controles." : ""}`
-        : undefined,
-      citeKnowledge(mode === "mocked" ? ["test-design-techniques"] : ["e2e-testing", "black-white-gray-box"]),
-    ]),
+      doc([
+        heading,
+        lead,
+        input.filePath && !isPage
+          ? "Este arquivo não é página (`pages/` ou `app/.../page`). Não invento URL e não uso o localhost como E2E live."
+          : undefined,
+        `**Arquivo:** \`${meta.testDir}/${rendered.fileName}\``,
+        located.portNote ? `> ${located.portNote}` : undefined,
+        choice.warning ? `> ${choice.warning}` : undefined,
+        stack.e2eFrameworks.length
+          ? `Framework detectado no projeto: ${stack.e2eFrameworks.join(", ")}.`
+          : "Nenhum Cypress, Playwright ou Selenium detectado. O padrão adotado é Playwright.",
+        "## Stack detectada",
+        stackSummary(stack),
+        "## Passos do fluxo",
+        steps.map((step, index) => `${index + 1}. ${step}`).join("\n"),
+        notes.length ? `## Notas\n${notes.map((note) => `- ${note}`).join("\n")}` : undefined,
+        "## Código",
+        codeBlock(rendered.language, rendered.code),
+        "## Estabilidade",
+        "- Um fluxo por teste, no caminho de maior risco.",
+        "- Localizadores por papel acessível ou data-testid.",
+        "- Espere estado, não um sleep fixo.",
+        `O teste usa os controles e a rota do arquivo${resolved.path ? ` (\`${resolved.path}\`)` : ""}.${steps.length ? " O userFlow entra junto com esses controles." : ""}`,
+        citeKnowledge(["e2e-testing", "black-white-gray-box"]),
+      ]),
     ),
     code: rendered.code,
     fileName: rendered.fileName,
-    framework: mode === "mocked" ? choice.framework : "playwright",
+    folder: rendered.folder,
+    framework,
+    fixtures: rendered.fixtures,
+    ctConfig: mode === "component" ? ctMeta.configFile : undefined,
   };
 }
 
 export async function generateE2eTest(input: GenerateE2eTestInput): Promise<ToolTextResult> {
-  return (await buildE2eTest(input)).result;
+  return handleGenerateE2eTest(input);
+}
+
+export async function handleGenerateE2eTest(input: GenerateE2eTestInput): Promise<ToolTextResult> {
+  const built = await buildE2eTest(input);
+  if (built.result.isError || !built.code || !built.fileName) return built.result;
+  const runner = built.framework === "playwright" ? ("playwright" satisfies TestRunner) : undefined;
+  const write = shouldWrite(input.writeToProject, input.projectRoot);
+  const run = shouldRun(input.run, Boolean(runner), input.projectRoot);
+  const extra: string[] = [];
+  if (write && input.projectRoot && built.fixtures?.length) {
+    extra.push(...writeFixtures(input.projectRoot, built.fixtures));
+  }
+  if (write && input.projectRoot) {
+    const relative = path.join(built.folder ?? "e2e", built.fileName);
+    try {
+      const destination = resolveInside(input.projectRoot, relative);
+      if (fs.existsSync(destination) && !input.overwrite) {
+        return textResult(
+          [built.result.content[0]?.text ?? "", ...extra, `O arquivo já existe em \`${destination}\`. Passe overwrite: true para substituir.`].join("\n\n"),
+        );
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return errorResult([built.result.content[0]?.text ?? "", message].filter(Boolean).join("\n\n"));
+    }
+  }
+  if (!write && !run) {
+    return extra.length
+      ? textResult([built.result.content[0]?.text ?? "", ...extra].join("\n\n"))
+      : built.result;
+  }
+  return persistGenerated({
+    projectRoot: input.projectRoot,
+    fileName: built.fileName,
+    code: built.code,
+    folder: built.folder ?? "e2e",
+    runner,
+    write,
+    run,
+    overwrite: input.overwrite,
+    configFile: built.ctConfig,
+    preface: [built.result.content[0]?.text ?? "", ...extra, run ? undefined : "Não foi executado."].filter(Boolean).join("\n\n"),
+  });
+}
+
+function writeFixtures(projectRoot: string, fixtures: RenderedFrontTest["fixtures"]): string[] {
+  const notes: string[] = [];
+  for (const fixture of fixtures) {
+    try {
+      const destination = resolveInside(projectRoot, fixture.relativePath);
+      if (fs.existsSync(destination)) {
+        notes.push(`Fixture reaproveitada: \`${destination}\``);
+        continue;
+      }
+      const written = writeProjectFile(projectRoot, fixture.relativePath, fixture.contents, false);
+      notes.push(`Fixture gravada: \`${written}\``);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      notes.push(message);
+    }
+  }
+  return notes;
 }
 
 export function registerE2eTools(server: McpServer): void {
@@ -248,11 +376,15 @@ export function registerE2eTools(server: McpServer): void {
     server,
     "generate_e2e_test",
     "Gerar teste E2E",
-    "E2E só quando o localhost responde ou há Component Testing; senão é tela mockada e não prova o app. Grava e executa o Playwright (`*.spec.ts`) quando esse runner está na lista fechada; Cypress e Selenium são gravados e ficam sem execução.",
+    "Padrão: página real com a API mockada (`@network-mock`). mockNetwork false gera spec live sem mock e sem clique em botão. Component Testing monta o componente. Grava e executa o Playwright quando o runner está na lista fechada; Cypress e Selenium são gravados e ficam sem execução.",
     {
       userFlow: z.string().optional().describe("Fluxo em linguagem natural. Se o arquivo da tela foi passado, os controles e a rota dele entram no teste."),
       framework: z.enum(["playwright", "cypress", "selenium"]).optional(),
-      baseUrl: z.string().optional().describe("Ignorada quando o host é de fora. O teste abre só http://127.0.0.1:3000."),
+      baseUrl: z.string().optional().describe("Ignorada quando o host é de fora. O spec usa caminho relativo e o baseURL da config."),
+      route: z.string().optional().describe("Rota da página. Ganha da dedução pelo arquivo."),
+      routeParams: z.record(z.string()).optional().describe("Valores para segmentos dinâmicos. Sem isso, cada parâmetro vira 1."),
+      apiPattern: z.string().optional().describe("Glob do catch-all da API. Padrão **/api/**."),
+      mockNetwork: z.boolean().optional().describe("false gera spec contra o backend real, sem mock e sem clique em botão. Padrão true."),
       projectRoot: z.string().optional(),
       filePath: z.string().optional(),
       sourceCode: z.string().optional(),
@@ -262,24 +394,7 @@ export function registerE2eTools(server: McpServer): void {
     async (args) => {
       const hydrated = await hydrateSource(server, args as unknown as GenerateE2eTestInput);
       if ("isError" in hydrated && hydrated.isError) return hydrated;
-      const ready = hydrated as GenerateE2eTestInput;
-      const built = await buildE2eTest(ready);
-      if (built.result.isError || !built.code || !built.fileName) return built.result;
-      const runner = built.framework === "playwright" ? ("playwright" satisfies TestRunner) : undefined;
-      const write = shouldWrite(ready.writeToProject, ready.projectRoot);
-      const run = shouldRun(ready.run, Boolean(runner), ready.projectRoot);
-      if (!write && !run) return built.result;
-      return persistGenerated({
-        projectRoot: ready.projectRoot,
-        fileName: built.fileName,
-        code: built.code,
-        folder: "e2e",
-        runner,
-        write,
-        run,
-        overwrite: ready.overwrite,
-        preface: [built.result.content[0]?.text ?? "", run ? undefined : "Não foi executado."].filter(Boolean).join("\n\n"),
-      });
+      return handleGenerateE2eTest(hydrated as GenerateE2eTestInput);
     },
     { readOnly: false },
   );

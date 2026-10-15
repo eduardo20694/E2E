@@ -242,9 +242,10 @@ describe("mutation e visual", () => {
     expect(body).toContain("mutmut");
   });
 
-  it("sugere Percy por padrão", () => {
+  it("usa screenshot local por padrão, sem Percy", () => {
     const body = text(visualRegressionSetup({}));
-    expect(body).toContain("percy");
+    expect(body.toLowerCase()).toContain("screenshot");
+    expect(body).toContain("nenhum config extra");
   });
 });
 
@@ -319,11 +320,13 @@ describe("estratégia", () => {
     fs.writeFileSync(path.join(root, "e2e", "buy.spec.ts"), "test('b', () => {})");
     fs.writeFileSync(path.join(root, "e2e", "flow.mocked.spec.ts"), "test('tela @mocked', () => {})");
     fs.writeFileSync(path.join(root, "e2e", "legacy.spec.ts"), "test('legado @mocked', () => {})");
+    fs.writeFileSync(path.join(root, "e2e", "pedidos.spec.ts"), "test('sucesso @network-mock', () => {})");
     const body = text(suggestTestPyramidBalance({ projectRoot: root }));
     expect(body).toContain("sum.test.ts");
     expect(body).toContain("buy.spec.ts");
     expect(body).toContain("flow.mocked.spec.ts");
-    expect(body).toContain("Mockado, fora da pirâmide: 2.");
+    expect(body).toContain("Mockado legado (@mocked): 2.");
+    expect(body).toContain("UI com API mockada (@network-mock): 1.");
     expect(body).toContain("| E2E | 1 |");
   });
 

@@ -52,7 +52,7 @@ export async function readWorkspace(
   let pyramid = "";
   try {
     const counts = scanPyramid(resolved.root);
-    pyramid = `Testes no disco: ${counts.unit} unitários, ${counts.integration} de integração, ${counts.e2e} E2E. Mockado, fora da pirâmide: ${counts.mocked}.`;
+    pyramid = `Testes no disco: ${counts.unit} unitários, ${counts.integration} de integração, ${counts.e2e} E2E. UI com API mockada: ${counts.networkMock}. Mockado legado: ${counts.mocked}.`;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     pyramid = `Não contei a pirâmide: ${message}`;
@@ -92,6 +92,8 @@ export async function runProjectTests(input: {
   projectRoot: string;
   runner: TestRunner;
   testPath?: string;
+  configFile?: string;
+  updateSnapshots?: boolean;
 }): Promise<ToolTextResult> {
   try {
     const report = await executeTests(input);
@@ -126,6 +128,8 @@ export async function persistGenerated(input: {
   overwrite?: boolean;
   skipIfExists?: boolean;
   preface: string;
+  configFile?: string;
+  updateSnapshots?: boolean;
 }): Promise<ToolTextResult> {
   const parts = [input.preface];
   let written: string | undefined;
@@ -161,12 +165,17 @@ export async function persistGenerated(input: {
         projectRoot: input.projectRoot,
         runner: input.runner,
         testPath: written,
+        configFile: input.configFile,
+        updateSnapshots: input.updateSnapshots,
       });
       const body = ran.content[0]?.text ?? "";
       if (ran.isError && /não está instalado|ENOENT/.test(body)) {
         parts.push(`${body}\n\nO arquivo foi gravado. A execução não rodou porque o runner não está instalado.`);
       } else {
         parts.push(body);
+        if (input.updateSnapshots) {
+          parts.push("A baseline de screenshot foi criada e precisa ser revisada.");
+        }
         if (ran.isError) return errorResult(parts.filter(Boolean).join("\n\n"));
       }
     }
@@ -259,8 +268,22 @@ export function registerExecutionTools(server: McpServer): void {
       projectRoot: z.string(),
       runner: z.enum(["vitest", "jest", "playwright", "pytest"]),
       testPath: z.string().optional().describe("Arquivo ou pasta dentro da raiz."),
+      configFile: z
+        .string()
+        .optional()
+        .describe("Só Playwright: playwright.config ou playwright-ct.config (ts, js ou mjs), dentro da raiz."),
+      updateSnapshots: z.boolean().optional().describe("Só Playwright: acrescenta --update-snapshots."),
     },
-    (args) => runProjectTests(args as { projectRoot: string; runner: TestRunner; testPath?: string }),
+    (args) =>
+      runProjectTests(
+        args as {
+          projectRoot: string;
+          runner: TestRunner;
+          testPath?: string;
+          configFile?: string;
+          updateSnapshots?: boolean;
+        },
+      ),
     { readOnly: false },
   );
 

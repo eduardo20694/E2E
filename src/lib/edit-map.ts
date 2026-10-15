@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { detectStack, type DetectedStack } from "./detect.js";
 import { extractSymbols } from "./symbols.js";
+import { commandOnPath } from "./runner.js";
 import { errorResult, textResult, type ToolTextResult } from "./result.js";
 import { doc } from "./format.js";
 import { CORE_TOOL_NAMES, TOOL_NAMES } from "../tools/register.js";
@@ -83,15 +84,15 @@ export const LAYER_GUIDE: LayerGuide[] = [
   },
   {
     id: "ui",
-    label: "UI",
+    label: "Tela",
     when: ".tsx, .jsx, ou pasta components, pages, views, screens",
     steps: [
+      { tool: "generate_e2e_test", reason: "Página real com a API mockada (modo network).", gate: "always" },
+      { tool: "visual_regression_setup", reason: "Screenshot local por estado, com a API mockada.", gate: "always" },
       { tool: "generate_unit_test", reason: "Teste do componente com os controles da tela.", gate: "always" },
-      { tool: "generate_e2e_test", reason: "Fluxo da tela com a rota e os controles do arquivo.", gate: "always" },
       { tool: "suggest_accessibility_audit", reason: "Auditoria de acessibilidade na rota da página.", gate: "always" },
       { tool: "suggest_security_checklist", reason: "Segurança da tela no localhost: cabeçalho, cookie, CSRF e escape.", gate: "always" },
       { tool: "suggest_sast_setup", reason: "SAST da stack. Roda o scanner local se o binário já está instalado.", gate: "always" },
-      { tool: "visual_regression_setup", reason: "Regressão visual.", gate: "visual" },
     ],
     avoid: [
       { tool: "generate_api_test", reason: "não é contrato de API." },
@@ -195,6 +196,7 @@ export interface EditMapInput {
   hasLcov?: boolean;
   /** Perfil ativo. Vazio cai em core, igual a `toolsetProfile`. */
   profile?: "core" | "full";
+  profileWarning?: string;
 }
 
 /** Markdown da matriz. O resource `e2e://map` devolve este texto, sem tabela escrita à parte. */
@@ -263,7 +265,10 @@ export function mapTestsForEdit(input: EditMapInput): ToolTextResult {
       ? "Nenhuma tool desta matriz está neste perfil."
       : "Nenhuma tool desta matriz cabe neste arquivo.";
 
+  const warning = input.profileWarning;
   const body = doc([
+    `Perfil: ${profile}`,
+    warning ? `> ${warning}` : undefined,
     `# Mapa — ${filePath}`,
     opening(filePath, layer, sourceCode, input, covered),
     "## Use nesta ordem",
@@ -327,7 +332,7 @@ const FALLBACK_AVOID: MapAvoid[] = [
 
 function activeSteps(guide: LayerGuide, input: EditMapInput, covered: boolean): MapStep[] {
   const stack = detectStack(input.projectRoot);
-  const selected = guide.steps.filter((step) => gateOpen(step.gate, input, stack));
+  const selected = guide.steps.filter((step) => gateOpen(step.gate, input, stack) && scaAllowed(step.tool, input.filePath));
   if (!covered || !input.siblingPath) return dedupe(selected);
   const review: MapStep = {
     tool: "read_workspace",
@@ -352,6 +357,14 @@ function gateOpen(gate: StepGate, input: EditMapInput, stack?: DetectedStack): b
 }
 
 const DEPENDENCY_MANIFESTS = ["package.json", "pyproject.toml", "pom.xml", "go.mod"];
+
+function scaAllowed(tool: string, filePath?: string): boolean {
+  if (tool !== "suggest_sca_setup") return true;
+  const file = filePath ?? "";
+  if (/\.java$/i.test(file) || /\.rb$/i.test(file)) return false;
+  if (/\.go$/i.test(file)) return Boolean(commandOnPath("govulncheck"));
+  return true;
+}
 
 function hasDependencyManifest(projectRoot?: string): boolean {
   if (!projectRoot) return false;

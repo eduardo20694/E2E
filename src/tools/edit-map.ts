@@ -5,7 +5,7 @@ import { mapTestsForEdit, siblingCandidates, type EditMapInput } from "../lib/ed
 import { registerTool } from "../lib/register-tool.js";
 import { readFirstExisting, readSuiteEvidence } from "../lib/report.js";
 import { errorResult } from "../lib/result.js";
-import { toolsetProfile } from "./register.js";
+import { toolsetProfile, toolsetWarning } from "./register.js";
 import { cursorRoots, readProjectFile, resolveInside, resolveProjectRoot } from "../lib/workspace.js";
 
 export function registerEditMapTools(server: McpServer): void {
@@ -45,6 +45,7 @@ export function registerEditMapTools(server: McpServer): void {
         projectRoot,
         sourceCode,
         profile: toolsetProfile(),
+        profileWarning: toolsetWarning(),
         ...facts,
       });
     },

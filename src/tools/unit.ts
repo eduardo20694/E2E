@@ -54,6 +54,7 @@ export function buildUnitTest(input: GenerateUnitTestInput): BuiltUnitTest {
     filePath: input.filePath,
     externalImports: imports.filter((item) => !item.local).map((item) => item.source),
     sourceCode: input.sourceCode,
+    projectRoot: input.projectRoot,
   });
 
   const mockNote =
@@ -85,6 +86,7 @@ export function buildUnitTest(input: GenerateUnitTestInput): BuiltUnitTest {
             .join("\n")
         : "- Nenhum símbolo extraído. O esqueleto usa `subject` para você apontar a unidade.",
       mockNote,
+      rendered.notes?.length ? rendered.notes.map((note) => `- ${note}`).join("\n") : undefined,
       "## Código",
       codeBlock(rendered.language, rendered.code),
       "## O que o teste verde significa",

@@ -1,4 +1,11 @@
 import type { UnitFramework } from "./detect.js";
+import {
+  buildFrontTest,
+  nodeModuleExists,
+  playwrightNetwork as writeNetworkSpec,
+  type FrontRenderOptions,
+  type RenderedFrontTest,
+} from "./front-spec.js";
 import { gapTest, jsImport, opaqueStatement, pytestFail, pytestSkip } from "./markers.js";
 import { analyzeFunction, formatValue, numericParamValues, parseSampleCode, type FunctionContract, type ValueLang } from "./oracle.js";
 import type { SymbolInfo } from "./symbols.js";
@@ -11,6 +18,12 @@ import {
   type UiControl,
   type WebRoute,
 } from "./web.js";
+
+export { mockPayload, renderedList } from "./front-spec.js";
+
+export function playwrightNetwork(options: FrontRenderOptions): string {
+  return writeNetworkSpec(options);
+}
 
 export function sampleArg(param: string, index: number): string {
   const name = param.toLowerCase();
@@ -74,7 +87,8 @@ export function renderUnitTest(options: {
   filePath?: string;
   externalImports: string[];
   sourceCode?: string;
-}): { language: string; fileName: string; code: string } {
+  projectRoot?: string;
+}): { language: string; fileName: string; code: string; notes?: string[] } {
   const symbols = options.symbols.length
     ? options.symbols
     : [{ kind: "function" as const, name: "subject", params: [], async: false }];
@@ -113,30 +127,59 @@ export function renderUnitTest(options: {
 function renderComponentTest(
   framework: "jest" | "vitest",
   component: { name: string; defaultExport: boolean },
-  options: { moduleName: string; filePath?: string; sourceCode?: string },
-): { language: string; fileName: string; code: string } {
-  const controls = extractUi(options.sourceCode ?? "");
+  options: { moduleName: string; filePath?: string; sourceCode?: string; projectRoot?: string },
+): { language: string; fileName: string; code: string; notes?: string[] } {
+  const controls = extractUi(options.sourceCode ?? "", { projectRoot: options.projectRoot });
   const specifier = options.filePath ? `./${moduleNameFromPath(options.filePath)}` : `./${options.moduleName}`;
   const importLine = jsImport(framework, ["describe", "it", "expect"]);
   const componentImport = component.defaultExport
     ? `import ${component.name} from "${specifier}";`
     : `import { ${component.name} } from "${specifier}";`;
-  const asserts = componentAssertions(controls);
+  const hasJsdom = nodeModuleExists(options.projectRoot, "jsdom");
+  const hasHappy = nodeModuleExists(options.projectRoot, "happy-dom");
+  const hasJestDom = nodeModuleExists(options.projectRoot, "@testing-library", "jest-dom");
+  const hasRtl = nodeModuleExists(options.projectRoot, "@testing-library", "react");
+  const matcher = hasJestDom ? "toBeInTheDocument()" : "toBeTruthy()";
+  const asserts = componentAssertions(controls, matcher);
   const fileRef = options.filePath ?? options.moduleName;
   const body = asserts.length
     ? asserts.join("\n")
     : `    ${opaqueStatement(framework, `Nenhum controle extraído de ${fileRef}.`)}`;
   const jsx = options.filePath?.toLowerCase().endsWith(".jsx");
+  const notes: string[] = [];
+  const pragma = hasJsdom
+    ? framework === "vitest"
+      ? "// @vitest-environment jsdom\n"
+      : "/** @jest-environment jsdom */\n"
+    : hasHappy && framework === "vitest"
+      ? "// @vitest-environment happy-dom\n"
+      : "";
+  if (!hasJsdom && !(hasHappy && framework === "vitest")) {
+    notes.push("O teste precisa de ambiente DOM (jsdom ou happy-dom).");
+  }
+  const jestDomImport = hasJestDom
+    ? framework === "vitest"
+      ? `import "@testing-library/jest-dom/vitest";\n`
+      : `import "@testing-library/jest-dom";\n`
+    : "";
+  if (!hasJestDom) notes.push("Sem @testing-library/jest-dom: a asserção usa toBeTruthy().");
+  if (!hasRtl) notes.push("Sem @testing-library/react em node_modules o teste não roda.");
+  const hooks = providerHooks(options.sourceCode ?? "");
+  if (hooks.length) {
+    notes.push(`O render precisa do provider de ${hooks.join(", ")}.`);
+  }
+  const renderComment = hooks.length ? `    // precisa do provider de ${hooks.join(", ")}\n` : "";
   return {
     language: "tsx",
     fileName: `${options.moduleName}.test.${jsx ? "jsx" : "tsx"}`,
-    code: `${importLine}
-import { render, screen } from "@testing-library/react";
+    notes,
+    code: `${pragma}${importLine}
+${jestDomImport}import { render, screen } from "@testing-library/react";
 ${componentImport}
 
 describe("${component.name}", () => {
   it("mostra os controles da tela", () => {
-    render(<${component.name} />);
+${renderComment}    render(<${component.name} />);
 ${body}
   });
 });
@@ -144,7 +187,19 @@ ${body}
   };
 }
 
-function componentAssertions(controls: UiControl[]): string[] {
+function providerHooks(source: string): string[] {
+  const found: string[] = [];
+  for (const name of ["useRouter", "useNavigate", "useQuery", "useSelector", "useContext"]) {
+    if (new RegExp(`\\b${name}\\b`).test(source)) found.push(name);
+  }
+  const custom = source.match(/\buse[A-Z]\w*Context\b/g) ?? [];
+  for (const name of custom) {
+    if (!found.includes(name)) found.push(name);
+  }
+  return found;
+}
+
+function componentAssertions(controls: UiControl[], matcher: string): string[] {
   const lines: string[] = [];
   const seen = new Set<string>();
   const add = (line: string) => {
@@ -153,20 +208,21 @@ function componentAssertions(controls: UiControl[]): string[] {
     lines.push(`    ${line}`);
   };
   for (const control of controls) {
+    if (control.conditional) continue;
     if ((control.kind === "button" || control.kind === "link" || control.kind === "heading") && control.text) {
       const role = control.kind === "button" ? "button" : control.kind === "link" ? "link" : "heading";
-      add(`expect(screen.getByRole("${role}", { name: ${JSON.stringify(control.text)} })).toBeInTheDocument();`);
+      add(`expect(screen.getByRole("${role}", { name: ${JSON.stringify(control.text)} })).${matcher};`);
     } else if (control.kind === "label" && control.text) {
-      add(`expect(screen.getByLabelText(${JSON.stringify(control.text)})).toBeInTheDocument();`);
+      add(`expect(screen.getByLabelText(${JSON.stringify(control.text)})).${matcher};`);
     } else if (control.kind === "placeholder" && control.text) {
-      add(`expect(screen.getByPlaceholderText(${JSON.stringify(control.text)})).toBeInTheDocument();`);
+      add(`expect(screen.getByPlaceholderText(${JSON.stringify(control.text)})).${matcher};`);
     } else if (control.kind === "testid" && control.text) {
-      add(`expect(screen.getByTestId(${JSON.stringify(control.text)})).toBeInTheDocument();`);
+      add(`expect(screen.getByTestId(${JSON.stringify(control.text)})).${matcher};`);
     } else if (control.kind === "role" && control.text) {
       const named = control.name ? `, { name: ${JSON.stringify(control.name)} }` : "";
-      add(`expect(screen.getByRole(${JSON.stringify(control.text)}${named})).toBeInTheDocument();`);
+      add(`expect(screen.getByRole(${JSON.stringify(control.text)}${named})).${matcher};`);
     } else if (control.kind === "input") {
-      add(`expect(screen.getByRole(${JSON.stringify(inputRole(control.type))})).toBeInTheDocument();`);
+      add(`expect(screen.getByRole(${JSON.stringify(inputRole(control.type))})).${matcher};`);
     }
   }
   return lines;
@@ -712,419 +768,15 @@ ${calls}
 `;
 }
 
-interface E2eRenderOptions {
-  steps: string[];
-  baseUrl: string;
-  title: string;
-  controls?: UiControl[];
-  route?: string;
-  sourceCode?: string;
-  filePath?: string;
-  mode?: "live" | "component" | "mocked";
-  componentName?: string;
-  componentDefaultExport?: boolean;
-  ctPackage?: string;
-  runner?: "vitest" | "jest";
-}
 
-const E2E_ORIGIN = "http://127.0.0.1:3000";
+export type E2eRenderOptions = FrontRenderOptions;
 
-export function renderE2eTest(options: E2eRenderOptions & {
+export function renderE2eTest(options: FrontRenderOptions & {
   framework: "playwright" | "cypress" | "selenium";
-}): { language: string; fileName: string; code: string } {
-  if (options.mode === "component") {
-    return { language: "tsx", fileName: "flow.ct.spec.tsx", code: playwrightComponent(options) };
-  }
-  const mocked = options.mode === "mocked";
-  if (options.framework === "cypress") {
-    return { language: "ts", fileName: mocked ? "flow.mocked.cy.spec.ts" : "flow.cy.spec.ts", code: cypress(options) };
-  }
-  if (options.framework === "selenium") {
-    return {
-      language: "ts",
-      fileName: mocked ? "flow.mocked.selenium.spec.ts" : "flow.selenium.spec.ts",
-      code: selenium(options),
-    };
-  }
-  return { language: "ts", fileName: mocked ? "flow.mocked.spec.ts" : "flow.spec.ts", code: playwright(options) };
+}): RenderedFrontTest {
+  return buildFrontTest(options);
 }
 
-function titled(options: E2eRenderOptions): string {
-  const base = escapeQuote(options.title);
-  if (options.mode === "mocked" && !/@mocked\b/.test(base)) return `${base} @mocked`;
-  return base;
-}
-
-function playwright(options: E2eRenderOptions): string {
-  if (options.mode === "live") return playwrightLive(options);
-  if (!options.controls?.length) {
-    return `import { test, expect } from "@playwright/test";
-
-test("${titled(options)}", async () => {
-  expect(false, "Passe o arquivo da tela.").toBe(true);
-});
-`;
-  }
-  const fixture = screenFixture(options);
-  const steps = options.steps.map((step, index) => `  // ${index + 1}. ${step}`);
-  const visible = [
-    ...options.controls.map((control) => playwrightVisible(control)).filter((line): line is string => Boolean(line)),
-    ...fixture.listLabels.map(
-      (label) => `  await expect(page.getByText(${JSON.stringify(label)}, { exact: true })).toBeVisible();`,
-    ),
-  ];
-  const clicks = options.controls
-    .map((control) => playwrightClick(control))
-    .filter((line): line is string => Boolean(line));
-  const origin = localBase(options.baseUrl);
-  const route = options.route && options.route !== "/" ? options.route : "";
-  const goto = route
-    ? `  const baseUrl = ${JSON.stringify(origin)};\n  await page.goto(baseUrl + ${JSON.stringify(route)});`
-    : `  await page.goto(${JSON.stringify(origin)});`;
-  return `import { test, expect } from "@playwright/test";
-
-test("${titled(options)}", async ({ page }) => {
-  const html = ${JSON.stringify(fixture.html)};
-  const json = ${JSON.stringify(fixture.json)};
-  await page.route("**/*", async (route) => {
-    const type = route.request().resourceType();
-    if (type === "document") {
-      await route.fulfill({ status: 200, contentType: "text/html", body: html });
-      return;
-    }
-    if (type === "xhr" || type === "fetch") {
-      await route.fulfill({ status: 200, contentType: "application/json", body: json });
-      return;
-    }
-    if (type === "stylesheet" || type === "script" || type === "image" || type === "font") {
-      await route.fulfill({ status: 200, body: "" });
-      return;
-    }
-    await route.fulfill({ status: 200, body: "" });
-  });
-${goto}
-${steps.length ? `${steps.join("\n")}\n` : ""}${visible.join("\n")}
-${clicks.join("\n")}
-});
-`;
-}
-
-function playwrightLive(options: E2eRenderOptions): string {
-  const steps = options.steps.map((step, index) => `  // ${index + 1}. ${step}`);
-  const visible = (options.controls ?? [])
-    .map((control) => playwrightVisible(control))
-    .filter((line): line is string => Boolean(line));
-  const clicks = (options.controls ?? [])
-    .map((control) => playwrightClick(control))
-    .filter((line): line is string => Boolean(line));
-  const url = joinLocalUrl(localBase(options.baseUrl), options.route);
-  return `import { test, expect } from "@playwright/test";
-
-test("${titled(options)}", async ({ page }) => {
-  await page.goto(${JSON.stringify(url)});
-${steps.length ? `${steps.join("\n")}\n` : ""}${visible.join("\n")}
-${clicks.join("\n")}
-});
-`;
-}
-
-function playwrightComponent(options: E2eRenderOptions): string {
-  const name = options.componentName ?? "Screen";
-  const specifier = relativeFromE2e(options.filePath, name);
-  const imported =
-    options.componentDefaultExport === false
-      ? `import { ${name} } from ${JSON.stringify(specifier)};`
-      : `import ${name} from ${JSON.stringify(specifier)};`;
-  const pkg = options.ctPackage ?? "@playwright/experimental-ct-react";
-  const steps = options.steps.map((step, index) => `  // ${index + 1}. ${step}`);
-  const visible = (options.controls ?? [])
-    .map((control) => playwrightVisible(control)?.replaceAll("page.", "component."))
-    .filter((line): line is string => Boolean(line));
-  const clicks = (options.controls ?? [])
-    .map((control) => playwrightClick(control)?.replaceAll("page.", "component."))
-    .filter((line): line is string => Boolean(line));
-  return `import { test, expect } from ${JSON.stringify(pkg)};
-${imported}
-
-test("${titled(options)}", async ({ mount }) => {
-  const component = await mount(<${name} />);
-${steps.length ? `${steps.join("\n")}\n` : ""}${visible.join("\n")}
-${clicks.join("\n")}
-});
-`;
-}
-
-function joinLocalUrl(base: string, route?: string): string {
-  const origin = base.replace(/\/$/, "");
-  if (!route || route === "/") return `${origin}/`;
-  return origin + (route.startsWith("/") ? route : `/${route}`);
-}
-
-function relativeFromE2e(filePath: string | undefined, name: string): string {
-  const normalized = (filePath ?? name).replace(/\\/g, "/").replace(/^\.\//, "").replace(/\.(tsx|jsx|ts|js)$/i, "");
-  const parts = normalized.split("/").filter(Boolean);
-  return `../${parts.join("/")}`;
-}
-
-function playwrightVisible(control: UiControl): string | undefined {
-  if (control.kind === "button" && control.text) {
-    return `  await expect(page.getByRole("button", { name: ${JSON.stringify(control.text)} })).toBeVisible();`;
-  }
-  if (control.kind === "link" && control.text) {
-    return `  await expect(page.getByRole("link", { name: ${JSON.stringify(control.text)} })).toBeVisible();`;
-  }
-  if (control.kind === "heading" && control.text) {
-    return `  await expect(page.getByRole("heading", { name: ${JSON.stringify(control.text)} })).toBeVisible();`;
-  }
-  if (control.kind === "label" && control.text) {
-    return `  await expect(page.getByLabel(${JSON.stringify(control.text)})).toBeVisible();`;
-  }
-  if (control.kind === "placeholder" && control.text) {
-    return `  await expect(page.getByPlaceholder(${JSON.stringify(control.text)})).toBeVisible();`;
-  }
-  if (control.kind === "testid" && control.text) {
-    return `  await expect(page.getByTestId(${JSON.stringify(control.text)})).toBeVisible();`;
-  }
-  if (control.kind === "role" && control.text) {
-    const named = control.name ? `, { name: ${JSON.stringify(control.name)} }` : "";
-    return `  await expect(page.getByRole(${JSON.stringify(control.text)}${named})).toBeVisible();`;
-  }
-  return undefined;
-}
-
-function playwrightClick(control: UiControl): string | undefined {
-  if (control.kind === "button" && control.text) {
-    return `  await page.getByRole("button", { name: ${JSON.stringify(control.text)} }).click();`;
-  }
-  if (control.kind === "link" && control.text) {
-    return `  await page.getByRole("link", { name: ${JSON.stringify(control.text)} }).click();`;
-  }
-  return undefined;
-}
-
-interface ScreenFixture {
-  html: string;
-  json: string;
-  listLabels: string[];
-}
-
-function screenFixture(options: E2eRenderOptions): ScreenFixture {
-  const controls = options.controls ?? [];
-  const routes = options.sourceCode ? extractRoutes(options.sourceCode, options.filePath) : [];
-  const list = options.sourceCode ? renderedList(options.sourceCode) : undefined;
-  const hint = controls.find((control) => control.text)?.text;
-  const labels = list ? [`${list.noun} 1`, `${list.noun} 2`] : [];
-  const parts = controls.map((control) => controlMarkup(control)).filter((part): part is string => Boolean(part));
-  if (labels.length) {
-    parts.push(`<ul>${labels.map((label) => `<li>${escapeHtml(label)}</li>`).join("")}</ul>`);
-  }
-  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>${parts.join("")}</body></html>`;
-  return { html, json: JSON.stringify(mockPayload(routes, list, hint)), listLabels: labels };
-}
-
-function mockPayload(routes: WebRoute[], list: { noun: string } | undefined, hint?: string): unknown {
-  const one = (id: number, name: string) => ({ id, title: name, name, mocked: true });
-  if (list) {
-    const items = [one(1, `${list.noun} 1`), one(2, `${list.noun} 2`)];
-    if (routes.length === 0) return items;
-    return Object.fromEntries(routes.map((route) => [`${route.method} ${route.path}`, items]));
-  }
-  const body = one(1, hint?.trim() || "item");
-  if (routes.length === 0) return body;
-  return Object.fromEntries(routes.map((route) => [`${route.method} ${route.path}`, { ...body }]));
-}
-
-function renderedList(source: string): { noun: string } | undefined {
-  const named = /([A-Za-z_$][\w$]*)\s*\.\s*map\s*\(/g;
-  let match: RegExpExecArray | null;
-  while ((match = named.exec(source))) {
-    const window = source.slice(Math.max(0, match.index - 80), match.index + 800);
-    if (/<[A-Za-z]/.test(window)) return { noun: listNoun(match[1]) };
-  }
-  const bare = source.search(/\.map\s*\(|\bmap\s*\(/);
-  if (bare >= 0) {
-    const window = source.slice(Math.max(0, bare - 80), bare + 800);
-    if (/<[A-Za-z]/.test(window)) return { noun: "Item" };
-  }
-  if (/<(?:ul|ol|table|tbody)\b/i.test(source)) {
-    const arrayName = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*\[/.exec(source);
-    return { noun: listNoun(arrayName?.[1] ?? "item") };
-  }
-  return undefined;
-}
-
-function listNoun(raw: string): string {
-  const word = raw.replace(/[_$]+/g, " ").trim().split(/\s+/).pop() ?? "item";
-  const stem = word.length > 2 && /s$/i.test(word) && !/ss$/i.test(word) ? word.slice(0, -1) : word;
-  if (!stem) return "Item";
-  return stem.charAt(0).toUpperCase() + stem.slice(1);
-}
-
-function controlMarkup(control: UiControl): string | undefined {
-  const text = control.text ? escapeHtml(control.text) : "";
-  if (control.kind === "button" && control.text) return `<button>${text}</button>`;
-  if (control.kind === "link" && control.text) return `<a href="#">${text}</a>`;
-  if (control.kind === "heading" && control.text) {
-    const level = control.level ?? 1;
-    return `<h${level}>${text}</h${level}>`;
-  }
-  if (control.kind === "label" && control.text) return `<label>${text}<input></label>`;
-  if (control.kind === "placeholder" && control.text) return `<input placeholder="${text}">`;
-  if (control.kind === "testid" && control.text) return `<div data-testid="${text}">${text}</div>`;
-  if (control.kind === "role" && control.text) {
-    const name = control.name ? ` aria-label="${escapeHtml(control.name)}"` : "";
-    const visible = escapeHtml(control.name || control.text);
-    return `<div role="${text}"${name}>${visible}</div>`;
-  }
-  if (control.kind === "input") {
-    if (control.type === "textarea") return `<textarea></textarea>`;
-    const type = control.type ? ` type="${escapeHtml(control.type)}"` : "";
-    return `<input${type}>`;
-  }
-  return undefined;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-
-function cypress(options: E2eRenderOptions): string {
-  if (options.controls?.length) {
-    const fixture = screenFixture(options);
-    const route = options.route && options.route !== "/" ? options.route : "";
-    const visit = route
-      ? `    const baseUrl = ${JSON.stringify(E2E_ORIGIN)};\n    const pageUrl = baseUrl + ${JSON.stringify(route)};`
-      : `    const pageUrl = ${JSON.stringify(E2E_ORIGIN)};`;
-    const steps = options.steps.map((step, index) => `    // ${index + 1}. ${step}`);
-    const visible = [
-      ...options.controls.map((control) => cypressVisible(control)).filter((line): line is string => Boolean(line)),
-      ...fixture.listLabels.map((label) => `    cy.findByText(${JSON.stringify(label)}).should("be.visible");`),
-    ];
-    const clicks = options.controls
-      .map((control) => cypressClick(control))
-      .filter((line): line is string => Boolean(line));
-    return `describe("${titled(options)}", () => {
-  it("completa o fluxo", () => {
-    const html = ${JSON.stringify(fixture.html)};
-    const json = ${JSON.stringify(fixture.json)};
-${visit}
-    cy.intercept("**/*", { statusCode: 200, headers: { "content-type": "application/json" }, body: json });
-    cy.intercept("GET", pageUrl, { statusCode: 200, headers: { "content-type": "text/html; charset=utf-8" }, body: html });
-    cy.visit(pageUrl);
-${steps.length ? `${steps.join("\n")}\n` : ""}${visible.join("\n")}
-${clicks.join("\n")}
-  });
-});`;
-  }
-  const body = options.steps
-    .map((step, index) => `    // ${index + 1}. ${step}\n    // cy.findByRole("button", { name: /continuar/i }).click();`)
-    .join("\n");
-  return `describe("${titled(options)}", () => {
-  it("completa o fluxo", () => {
-    cy.visit("${options.baseUrl}");
-${body}
-    cy.location("pathname").should("exist");
-  });
-});`;
-}
-
-function cypressVisible(control: UiControl): string | undefined {
-  if (control.kind === "button" && control.text) {
-    return `    cy.findByRole("button", { name: ${JSON.stringify(control.text)} }).should("be.visible");`;
-  }
-  if (control.kind === "link" && control.text) {
-    return `    cy.findByRole("link", { name: ${JSON.stringify(control.text)} }).should("be.visible");`;
-  }
-  if (control.kind === "heading" && control.text) {
-    return `    cy.findByRole("heading", { name: ${JSON.stringify(control.text)} }).should("be.visible");`;
-  }
-  if (control.kind === "label" && control.text) {
-    return `    cy.findByLabelText(${JSON.stringify(control.text)}).should("be.visible");`;
-  }
-  if (control.kind === "placeholder" && control.text) {
-    return `    cy.findByPlaceholderText(${JSON.stringify(control.text)}).should("be.visible");`;
-  }
-  if (control.kind === "testid" && control.text) {
-    return `    cy.findByTestId(${JSON.stringify(control.text)}).should("be.visible");`;
-  }
-  if (control.kind === "role" && control.text) {
-    const named = control.name ? `, { name: ${JSON.stringify(control.name)} }` : "";
-    return `    cy.findByRole(${JSON.stringify(control.text)}${named}).should("be.visible");`;
-  }
-  return undefined;
-}
-
-function cypressClick(control: UiControl): string | undefined {
-  if (control.kind === "button" && control.text) {
-    return `    cy.findByRole("button", { name: ${JSON.stringify(control.text)} }).click();`;
-  }
-  if (control.kind === "link" && control.text) {
-    return `    cy.findByRole("link", { name: ${JSON.stringify(control.text)} }).click();`;
-  }
-  return undefined;
-}
-
-function selenium(options: E2eRenderOptions): string {
-  const fromScreen = Boolean(options.controls?.length);
-  const body = fromScreen
-    ? [
-        ...gotoLines("selenium", options.baseUrl, options.route),
-        ...options.steps.map((step, index) => `    // ${index + 1}. ${step}`),
-        ...options.controls!.map((control) => seleniumControl(control)).filter((line): line is string => Boolean(line)),
-      ].join("\n")
-    : options.steps.map((step, index) => `    // ${index + 1}. ${step}`).join("\n");
-  const opener = fromScreen ? "" : `\n    await driver.get("${options.baseUrl}");`;
-  const tail = fromScreen ? "" : `\n    await driver.wait(until.urlContains(""), 5000);`;
-  const runner = options.runner === "jest" ? "jest" : "vitest";
-  return `import { Builder, Browser, By, until } from "selenium-webdriver";
-${jsImport(runner, ["describe", "it", "afterEach"])}
-
-describe("${titled(options)}", () => {
-  let driver: Awaited<ReturnType<Builder["build"]>>;
-
-  afterEach(async () => {
-    await driver?.quit();
-  });
-
-  it("completa o fluxo", async () => {
-    driver = await new Builder().forBrowser(Browser.CHROME).build();${opener}
-${body}${tail}
-  });
-});`;
-}
-
-function seleniumControl(control: UiControl): string | undefined {
-  if (control.kind === "button" && control.text) {
-    return `    await driver.findElement(By.xpath("//button[normalize-space()=${xpathLiteral(control.text)}]")).click();`;
-  }
-  if (control.kind === "heading" && control.text) {
-    return `    await driver.findElement(By.xpath("//*[self::h1 or self::h2 or self::h3][normalize-space()=${xpathLiteral(control.text)}]"));`;
-  }
-  if (control.kind === "link" && control.text) {
-    return `    await driver.findElement(By.linkText(${JSON.stringify(control.text)})).click();`;
-  }
-  return undefined;
-}
-
-function gotoLines(framework: "playwright" | "cypress" | "selenium", baseUrl: string, route?: string): string[] {
-  const base = JSON.stringify(localBase(baseUrl));
-  if (framework === "cypress") {
-    if (!route) return [`    cy.visit(${base});`];
-    return [`    const baseUrl = ${base};`, `    cy.visit(baseUrl + ${JSON.stringify(route)});`];
-  }
-  if (framework === "selenium") {
-    if (!route) return [`    await driver.get(${base});`];
-    return [`    const baseUrl = ${base};`, `    await driver.get(baseUrl + ${JSON.stringify(route)});`];
-  }
-  if (!route) return [`  await page.goto(${base});`];
-  return [`  const baseUrl = ${base};`, `  await page.goto(baseUrl + ${JSON.stringify(route)});`];
-}
-
-function xpathLiteral(value: string): string {
-  if (!value.includes("'")) return `'${value}'`;
-  if (!value.includes('"')) return `"${value}"`;
-  return `concat('${value.replace(/'/g, `', "'", '`)}')`;
-}
 
 export function renderApiTest(options: {
   protocol: "rest" | "graphql" | "grpc";

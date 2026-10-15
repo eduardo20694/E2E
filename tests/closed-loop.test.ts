@@ -93,4 +93,22 @@ describe("ciclo fechado", () => {
     expect(command.args).toContain("run");
     expect(command.args.some((arg) => arg.endsWith("add.test.ts"))).toBe(true);
   });
+
+  it("aceita só playwright.config no -c e --update-snapshots", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-pw-"));
+    const binDir = path.join(root, "node_modules", "@playwright", "test");
+    fs.mkdirSync(binDir, { recursive: true });
+    fs.writeFileSync(path.join(binDir, "cli.js"), "");
+    fs.writeFileSync(path.join(root, "playwright-ct.config.ts"), "export default {};");
+    const command = buildRunnerCommand(root, "playwright", "e2e/pedidos.spec.ts", {
+      configFile: "playwright-ct.config.ts",
+      updateSnapshots: true,
+    });
+    expect(command.args).toContain("-c");
+    expect(command.args).toContain("playwright-ct.config.ts");
+    expect(command.args).toContain("--update-snapshots");
+    expect(() => buildRunnerCommand(root, "playwright", "e2e/a.spec.ts", { configFile: "vite.config.ts" })).toThrow(
+      /playwright\.config/,
+    );
+  });
 });

@@ -110,8 +110,26 @@ export const CORE_TOOL_NAMES = [
   "visual_regression_setup",
 ] as const;
 
+let invalidToolset: string | undefined;
+
 export function toolsetProfile(): "core" | "full" {
-  return process.env.E2E_TOOLSET?.trim().toLowerCase() === "full" ? "full" : "core";
+  const raw = process.env.E2E_TOOLSET?.trim() ?? "";
+  const lower = raw.toLowerCase();
+  if (lower === "full") {
+    invalidToolset = undefined;
+    return "full";
+  }
+  if (raw && lower !== "core") {
+    invalidToolset = `E2E_TOOLSET="${raw}" é inválido. Use core ou full. Caindo no perfil core.`;
+    process.stderr.write(`${invalidToolset}\n`);
+  } else {
+    invalidToolset = undefined;
+  }
+  return "core";
+}
+
+export function toolsetWarning(): string | undefined {
+  return invalidToolset;
 }
 
 export function registerAllTools(server: McpServer): void {

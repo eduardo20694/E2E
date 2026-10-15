@@ -63,7 +63,7 @@ describe("execução local fechada", () => {
     const spec = buildSecurityFrontSpec("src/pages/Home.tsx", titulo);
     expect(spec).toContain("content-security-policy");
     expect(spec).toContain("nosniff");
-    expect(spec).toContain("http://127.0.0.1:3000/home");
+    expect(spec).toContain("http://127.0.0.1:3000/Home");
     expect(spec).not.toContain("httponly");
     expect(spec).not.toContain("csrf");
 
@@ -197,5 +197,17 @@ app.get("/pedidos", (_req, res) => res.json({ ok: true }));`;
     const tools = [...body.slice(start, end).matchAll(/^\d+\. `([^`]+)`/gm)].map((match) => match[1]);
     expect(tools[0]).toBe("generate_unit_test");
     expect(tools).toContain("suggest_sca_setup");
+  });
+
+  it("omite SCA em Java e Ruby", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "e2e-sca-java-"));
+    fs.writeFileSync(path.join(root, "package.json"), "{}");
+    const java = mapTestsForEdit({
+      filePath: "src/Pricing.java",
+      projectRoot: root,
+      sourceCode: "class Pricing { int price(int n) { return n; } }",
+    });
+    const body = java.content[0]?.text ?? "";
+    expect(body).not.toContain("suggest_sca_setup");
   });
 });

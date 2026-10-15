@@ -9,22 +9,25 @@ import { errorResult, textResult, type ToolTextResult } from "../lib/result.js";
 import type { ProjectContextInput } from "../lib/schema.js";
 
 export interface PyramidInput extends ProjectContextInput {
-  counts?: { unit: number; integration: number; e2e: number; mocked?: number };
+  counts?: { unit: number; integration: number; e2e: number; mocked?: number; networkMock?: number };
 }
 
 export function suggestTestPyramidBalance(input: PyramidInput): ToolTextResult {
   let counts: Pick<PyramidCounts, "unit" | "integration" | "e2e">;
   let mocked = 0;
+  let networkMock = 0;
   let sample = "";
 
   if (input.counts) {
     counts = input.counts;
     mocked = input.counts.mocked ?? 0;
+    networkMock = input.counts.networkMock ?? 0;
   } else if (input.projectRoot) {
     const scanned = scanPyramid(input.projectRoot);
     counts = scanned;
     mocked = scanned.mocked;
-    sample = (["unit", "integration", "e2e", "mocked"] as const)
+    networkMock = scanned.networkMock;
+    sample = (["unit", "integration", "e2e", "mocked", "networkMock"] as const)
       .map((bucket) => {
         const files = scanned.files[bucket];
         return files.length ? `**${bucket}:** ${files.join(", ")}` : undefined;
@@ -48,7 +51,8 @@ export function suggestTestPyramidBalance(input: PyramidInput): ToolTextResult {
         ],
       ),
       `Total da pirâmide (unitário + integração + E2E): ${balance.total}.`,
-      `Mockado, fora da pirâmide: ${mocked}. Não entra na fatia E2E nem nesse total.`,
+      `UI com API mockada (@network-mock): ${networkMock}. Não entra na fatia E2E nem no total da pirâmide.`,
+      `Mockado legado (@mocked): ${mocked}. Não entra na fatia E2E nem nesse total.`,
       balance.advice.map((item) => `- ${item}`).join("\n"),
       sample ? `## Amostra\n${sample}` : undefined,
       input.sourceCode ? "O código aberto não entra na contagem; a contagem usa arquivos de teste no disco ou os números informados." : undefined,
@@ -188,7 +192,7 @@ export function registerStrategyTools(server: McpServer): void {
     server,
     "suggest_test_pyramid_balance",
     "Equilíbrio da pirâmide",
-    "Pirâmide lê arquivos de teste no disco, ou usa contagens informadas, e calcula sem gravar o rebalanceamento das camadas.",
+    "Pirâmide lê arquivos de teste no disco, ou usa contagens informadas, e calcula sem gravar o rebalanceamento das camadas. @network-mock conta como UI com API mockada, fora do E2E e do unitário. @mocked continua reconhecido por compatibilidade.",
     {
       projectRoot: z.string().optional(),
       counts: z
@@ -197,6 +201,7 @@ export function registerStrategyTools(server: McpServer): void {
           integration: z.number(),
           e2e: z.number(),
           mocked: z.number().optional(),
+          networkMock: z.number().optional(),
         })
         .optional(),
       filePath: z.string().optional(),

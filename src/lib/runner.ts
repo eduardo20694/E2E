@@ -47,21 +47,49 @@ export interface ClosedPlan {
 
 const MAX_TIMEOUT_MS = 120_000;
 
-export function buildRunnerCommand(projectRoot: string, runner: TestRunner, testPath?: string): RunnerCommand {
+export interface RunnerOptions {
+  configFile?: string;
+  updateSnapshots?: boolean;
+}
+
+const PLAYWRIGHT_CONFIG = /^playwright(-ct)?\.config\.(ts|js|mjs)$/;
+
+export function buildRunnerCommand(
+  projectRoot: string,
+  runner: TestRunner,
+  testPath?: string,
+  options?: RunnerOptions,
+): RunnerCommand {
   const relative = testPath ? safeRelative(projectRoot, testPath) : undefined;
   if (runner === "pytest") {
     return { command: process.platform === "win32" ? "python" : "python3", args: ["-m", "pytest", "-q", ...(relative ? [relative] : [])] };
   }
 
   const bin = runnerBinary(projectRoot, runner);
-  const args =
-    runner === "playwright"
-      ? [bin, "test", ...(relative ? [relative] : [])]
-      : [bin, "run", ...(relative ? [relative] : [])];
+  if (runner === "playwright") {
+    const args = [bin, "test"];
+    if (options?.configFile) {
+      args.push("-c", playwrightConfigRelative(projectRoot, options.configFile));
+    }
+    if (relative) args.push(relative);
+    if (options?.updateSnapshots) args.push("--update-snapshots");
+    return { command: process.execPath, args };
+  }
+  const args = [bin, "run", ...(relative ? [relative] : [])];
   if (runner === "jest") {
     return { command: process.execPath, args: [bin, "--watchAll=false", ...(relative ? [relative] : [])] };
   }
   return { command: process.execPath, args };
+}
+
+function playwrightConfigRelative(projectRoot: string, configFile: string): string {
+  const relative = safeRelative(projectRoot, configFile);
+  const base = path.basename(relative);
+  if (!PLAYWRIGHT_CONFIG.test(base)) {
+    throw new Error("configFile só aceita playwright.config ou playwright-ct.config (ts, js ou mjs).");
+  }
+  resolveInside(projectRoot, relative);
+  return relative;
 }
 
 export function runnerInstalled(projectRoot: string, runner: TestRunner): boolean {
@@ -132,8 +160,13 @@ export async function executeTests(options: {
   runner: TestRunner;
   testPath?: string;
   timeoutMs?: number;
+  configFile?: string;
+  updateSnapshots?: boolean;
 }): Promise<RunReport> {
-  const command = buildRunnerCommand(options.projectRoot, options.runner, options.testPath);
+  const command = buildRunnerCommand(options.projectRoot, options.runner, options.testPath, {
+    configFile: options.configFile,
+    updateSnapshots: options.updateSnapshots,
+  });
   const report = await spawnCaptured(command.command, command.args, path.resolve(options.projectRoot), options.timeoutMs);
   if (report.spawnError) throw new Error(report.output || "Falha ao iniciar o processo.");
   return {
@@ -425,7 +458,7 @@ function packageBin(projectRoot: string, packageDir: string[], fallbacks: string
   return undefined;
 }
 
-function commandOnPath(name: string): string | undefined {
+export function commandOnPath(name: string): string | undefined {
   const pathEnv = process.env.PATH ?? process.env.Path ?? "";
   const dirs = pathEnv.split(path.delimiter).filter(Boolean);
   const hasExt = path.extname(name) !== "";

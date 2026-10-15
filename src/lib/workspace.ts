@@ -55,7 +55,7 @@ const EXTRA_FILES = new Set([
 ]);
 
 const TEST_FILE =
-  /^(?:.+\.test\.(?:ts|tsx|js|jsx|mjs|cjs)|.+\.spec\.(?:ts|tsx|js|jsx|mjs|cjs)|test_.+\.py|.+_test\.py|.+Test\.java|.+_spec\.rb|.+_test\.rb|.+_test\.go|.+\.feature)$/;
+  /^(?:.+\.test\.(?:ts|tsx|js|jsx|mjs|cjs)|.+\.spec\.(?:ts|tsx|js|jsx|mjs|cjs)|.+\.cy\.(?:ts|js)|test_.+\.py|.+_test\.py|.+Test\.java|.+_spec\.rb|.+_test\.rb|.+_test\.go|.+\.feature)$/;
 
 export type RootVia = "argumento" | "env" | "cursor" | "arquivo" | "nenhuma";
 
