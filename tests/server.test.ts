@@ -12,7 +12,7 @@ describe("servidor MCP E2E", () => {
     close = undefined;
   });
 
-  it("no perfil core registra as 20 tools, nesta ordem", async () => {
+  it("no perfil core registra as 22 tools, nesta ordem", async () => {
     const previous = process.env.E2E_TOOLSET;
     delete process.env.E2E_TOOLSET;
     const server = createServer();
@@ -28,7 +28,7 @@ describe("servidor MCP E2E", () => {
 
     const tools = await client.listTools();
     expect(tools.tools.map((tool) => tool.name)).toEqual([...CORE_TOOL_NAMES]);
-    expect(CORE_TOOL_NAMES).toHaveLength(20);
+    expect(CORE_TOOL_NAMES).toHaveLength(22);
     expect(CORE_TOOL_NAMES).toContain("setup_consumer_driven_contracts");
     expect(CORE_TOOL_NAMES as readonly string[]).not.toContain("generate_bug_report");
     expect(client.getInstructions()).toContain("E2E_TOOLSET=full");
@@ -98,7 +98,7 @@ describe("servidor MCP E2E", () => {
     const tools = await client.listTools();
     const names = tools.tools.map((tool) => tool.name).sort();
     expect(names).toEqual([...TOOL_NAMES].sort());
-    expect(TOOL_NAMES).toHaveLength(55);
+    expect(TOOL_NAMES).toHaveLength(57);
     const removed = [
       "suggest_test_management_tool",
       "suggest_reporting_setup",

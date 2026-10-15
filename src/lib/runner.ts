@@ -46,13 +46,15 @@ export interface ClosedPlan {
 }
 
 const MAX_TIMEOUT_MS = 120_000;
+/** Jornada E2E com o sistema inteiro pode passar de 2 minutos. Teto de 15. */
+const MAX_PLAYWRIGHT_TIMEOUT_MS = 900_000;
 
 export interface RunnerOptions {
   configFile?: string;
   updateSnapshots?: boolean;
 }
 
-const PLAYWRIGHT_CONFIG = /^playwright(-ct)?\.config\.(ts|js|mjs)$/;
+const PLAYWRIGHT_CONFIG = /^playwright(-ct|\.journeys)?\.config\.(ts|js|mjs)$/;
 
 export function buildRunnerCommand(
   projectRoot: string,
@@ -86,7 +88,7 @@ function playwrightConfigRelative(projectRoot: string, configFile: string): stri
   const relative = safeRelative(projectRoot, configFile);
   const base = path.basename(relative);
   if (!PLAYWRIGHT_CONFIG.test(base)) {
-    throw new Error("configFile só aceita playwright.config ou playwright-ct.config (ts, js ou mjs).");
+    throw new Error("configFile só aceita playwright.config, playwright-ct.config ou playwright.journeys.config (ts, js ou mjs).");
   }
   resolveInside(projectRoot, relative);
   return relative;
@@ -167,7 +169,13 @@ export async function executeTests(options: {
     configFile: options.configFile,
     updateSnapshots: options.updateSnapshots,
   });
-  const report = await spawnCaptured(command.command, command.args, path.resolve(options.projectRoot), options.timeoutMs);
+  const report = await spawnCaptured(
+    command.command,
+    command.args,
+    path.resolve(options.projectRoot),
+    options.timeoutMs,
+    options.runner === "playwright" ? MAX_PLAYWRIGHT_TIMEOUT_MS : MAX_TIMEOUT_MS,
+  );
   if (report.spawnError) throw new Error(report.output || "Falha ao iniciar o processo.");
   return {
     runner: options.runner,
@@ -479,8 +487,8 @@ export function commandOnPath(name: string): string | undefined {
   return undefined;
 }
 
-function spawnCaptured(command: string, args: string[], cwd: string, timeoutMs?: number): Promise<CommandReport> {
-  const limit = clampTimeout(timeoutMs);
+function spawnCaptured(command: string, args: string[], cwd: string, timeoutMs?: number, max = MAX_TIMEOUT_MS): Promise<CommandReport> {
+  const limit = clampTimeout(timeoutMs, max);
   return new Promise((resolve) => {
     let child;
     try {
@@ -532,9 +540,9 @@ function spawnCaptured(command: string, args: string[], cwd: string, timeoutMs?:
   });
 }
 
-function clampTimeout(timeoutMs?: number): number {
+function clampTimeout(timeoutMs?: number, max = MAX_TIMEOUT_MS): number {
   if (timeoutMs === undefined || !Number.isFinite(timeoutMs) || timeoutMs <= 0) return MAX_TIMEOUT_MS;
-  return Math.min(timeoutMs, MAX_TIMEOUT_MS);
+  return Math.min(timeoutMs, max);
 }
 
 function runnerBinary(projectRoot: string, runner: TestRunner): string {

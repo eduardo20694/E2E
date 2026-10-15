@@ -2,7 +2,7 @@
 
 Servidor [MCP](https://modelcontextprotocol.io) local para o Cursor atuar como especialista de teste full-stack. Transporte stdio, SDK `@modelcontextprotocol/sdk`, schemas com Zod.
 
-O catálogo completo tem **55 tools**, **33 resources** e **8 prompts** (o perfil core registra 3: revisar teste, auditar suíte e auditoria do pipeline). O padrão é o perfil core (20 tools), para quem edita um arquivo e pede teste. `E2E_TOOLSET=full` devolve o catálogo inteiro, inclusive métricas e deploy. A resposta de `map_tests_for_edit` corta pelo perfil ativo; o que falta aparece como disponível com E2E_TOOLSET=full. Cada tool cobre um domínio. A tabela no final deste arquivo diz se o resultado é mock, ambiente real isolado ou produção real. A partir da versão 3 o servidor também lê o workspace, grava o teste, executa o runner do projeto e lê JUnit ou Allure. Gestão, relatório, compliance, shift e ambiente estão nas resources, não em tools.
+O catálogo completo tem **57 tools**, **33 resources** e **8 prompts** (o perfil core registra 3: revisar teste, auditar suíte e auditoria do pipeline). O padrão é o perfil core (22 tools), para quem edita um arquivo e pede teste. `E2E_TOOLSET=full` devolve o catálogo inteiro, inclusive métricas e deploy. A resposta de `map_tests_for_edit` corta pelo perfil ativo; o que falta aparece como disponível com E2E_TOOLSET=full. Cada tool cobre um domínio. A tabela no final deste arquivo diz se o resultado é mock, ambiente real isolado ou produção real. A partir da versão 3 o servidor também lê o workspace, grava o teste, executa o runner do projeto e lê JUnit ou Allure. Gestão, relatório, compliance, shift e ambiente estão nas resources, não em tools.
 
 ## Requisitos
 
@@ -62,8 +62,88 @@ Teste de tela usa a página real e a API mockada. O spec intercepta só a API, a
 | `generate_unit_test` | core | Grava e executa Vitest, Jest e pytest. Go, Java e Ruby gravam o arquivo; o runner local não executa go test, JUnit nem RSpec. Return puro vira caracterização: trava o comportamento atual, inclusive bug | "Gera o unitário desta função em `src/pricing.ts`. projectRoot é o workspace." |
 | `generate_integration_test` | core | Integração em ambiente real isolado. Diz o que mockar (terceiro) e o que não mockar (banco e fila do sistema) | "Teste de integração da API de pedidos com Postgres." |
 | `generate_e2e_test` | core | Padrão **network**: página real, API mockada, tag `@network-mock`. Inputs: `route`, `routeParams`, `apiPattern` (padrão `**/api/**`), `mockNetwork` (padrão true). `mockNetwork: false` é live sem mock e sem clique em botão. Sem rota de página e com o pacote de CT, monta o componente. Arquivo: `<testDir>/<slug>.spec.ts`, fixtures em `tests/fixtures/<slug>/` | "Tela de pedidos a partir de `src/pages/pedidos.tsx`." |
+| `generate_journey_test` | core | **Jornada ponta a ponta de verdade.** Várias páginas contra o sistema inteiro de pé, sem mock de rede: login pela tela (credencial de variável de ambiente), seed pela API, clique e envio reais, espera da chamada de API com status, captura de valores, verificação no backend e limpeza no final, mesmo com falha. Arquivo: `<testDir>/journeys/<slug>.journey.spec.ts`, tag `@journey` | "Jornada: login, abre o produto, compra 2 e confere o pedido no backend." |
+| `setup_e2e_environment` | core | Prepara o projeto para as jornadas, uma vez: `playwright.journeys.config.ts` (chromium, firefox, webkit, celular emulado; webServer que sobe frontend, API e worker ou `docker compose up`; trace, vídeo e screenshot na falha; novas tentativas; idioma e fuso; relatório HTML e JUnit) e `.github/workflows/e2e-journeys.yml` | "Prepara o E2E com Chrome, Safari e iPhone, subindo com docker compose." |
 | `generate_api_test` | core | Caminho feliz com um status. Entrada inválida vira `toBe` só com 400 ou 422 no handler. Anônimo vira `toBe` só com guarda ou 401/403 no handler. Senão é lacuna: `test.todo` só com a descrição no Vitest e no Jest, `test.fixme` no Playwright e `@pytest.mark.skip` no pytest. Corpo opaco é `expect.fail`, `throw new Error` ou `pytest.fail` | "Contrato do `POST /orders`, incluindo 400 e 401." |
 | `generate_mobile_test` | full | Fluxo Appium (Android, iOS ou ambos) | "Teste Appium do login no Android." |
+
+### Jornada ponta a ponta (`generate_journey_test`)
+
+`generate_e2e_test` cobre uma tela com a API mockada. `generate_journey_test` cobre o fluxo de negócio inteiro com o sistema real: navegador → frontend → API → banco. O teste falha quando qualquer camada quebra.
+
+**Pré-requisito:** o sistema inteiro de pé (`docker compose up -d`, `npm run dev`...). Antes do primeiro passo o spec checa `healthPath` e, se o sistema não responder, falha com a mensagem dizendo isso.
+
+**Entrada:**
+
+| Campo | O que é |
+| --- | --- |
+| `name` | Nome da jornada. Vira o nome do arquivo e do teste. |
+| `steps` | Passos em ordem (abaixo). |
+| `baseUrl`, `apiBaseUrl` | Frontend e API. Padrão `http://127.0.0.1:<porta do projeto>`. No spec, `E2E_BASE_URL` e `E2E_API_URL` sobrescrevem. |
+| `auth` | Login pela tela: `loginPath`, `userTarget`, `passwordTarget`, `submitTarget`, `successPath` ou `successText`. Usuário e senha vêm de `E2E_USER` e `E2E_PASSWORD` (ou `userEnv`, `passwordEnv`). |
+| `seed` | Chamadas de API antes da jornada (POST padrão), com `saveAs` para guardar ids. |
+| `cleanup` | Chamadas no final (DELETE padrão), em ordem reversa, mesmo com falha. 404 é ignorado. |
+| `apiHeaders` | Cabeçalhos do seed e da limpeza, ex.: `{ "Authorization": "Bearer {{env.API_TOKEN}}" }`. |
+| `pageFiles` | Arquivos das telas. A tool confere se cada alvo aparece neles e avisa o que não achou. |
+| `allowRemote` | Executa fora do localhost (staging, homologação). Sem isso, grava e não executa. |
+
+**Passos** (`action`):
+
+| Grupo | Passos |
+| --- | --- |
+| Navegar | `goto`, `reload`, `back` |
+| Interagir | `click` (com `awaitResponse` ou `opensTab`), `fill`, `select`, `check`, `uncheck`, `hover`, `dragTo`, `press` |
+| Arquivos | `upload` (caminhos relativos à raiz), `download` (`expectFileName`, `expectContains`) |
+| Diálogos | `dialog` (aceita ou recusa o próximo alert/confirm/prompt; `promptText`, `saveAs` da mensagem) |
+| Conferir tela | `expectVisible`, `expectHidden`, `expectText`, `expectValue`, `expectCount`, `expectEnabled`, `expectDisabled`, `expectChecked`, `expectUrl` |
+| Capturar | `capture` (texto ou valor, `pattern` opcional) |
+| Backend | `api` (`expectStatus`, `expectJson`, `saveAs`, `match` por regex) |
+| E-mail | `email` (Mailpit local: `to`, `subject`, `expectText`, `saveLink` para seguir o link de confirmação) |
+| Visual | `expectScreenshot` (comparação estrita com a referência; `mask` para data e id; `maxDiffPixelRatio` para tolerar) |
+| Acessibilidade | `a11y` (axe-core, WCAG 2.1 AA; `minImpact` padrão serious) |
+| Evidência | `screenshot` |
+
+**Vários usuários e abas:** `actors` declara outros usuários, cada um no próprio navegador e com login por variável de ambiente (`{ "admin": { ..., "userEnv": "E2E_ADMIN_USER", "passwordEnv": "E2E_ADMIN_PASSWORD" } }`). `click` com `opensTab: "recibo"` guarda a nova aba. Qualquer passo com `as: "admin"` ou `as: "recibo"` roda ali.
+
+**Contexto:** `locale`, `timezoneId`, `colorScheme` e `retries` por jornada.
+
+- **Alvo** (`target`): `testId`, `role` + `name`, `label`, `placeholder`, `text` ou `css`, nessa ordem de preferência. Aceita `exact` e `nth`.
+- **`awaitResponse`** em `click` e `press`: espera a chamada de API que a ação dispara, confere o status real e guarda campos do JSON (`saveAs`).
+- **`capture`**: guarda texto ou valor de um elemento, com `pattern` opcional (regex, primeiro grupo).
+- **`api`**: confere o efeito no backend com a sessão do navegador (`expectStatus`, `expectJson`).
+- **Variáveis**: `{{runId}}` (único por execução, para dado não colidir), `{{env.NOME}}` e tudo que foi capturado. A tool recusa variável usada antes de ser capturada e avisa quando a senha vai literal no arquivo.
+
+**Exemplo de chamada:**
+
+```json
+{
+  "name": "cliente compra um produto e vê o pedido",
+  "auth": { "loginPath": "/login", "userTarget": { "label": "E-mail" }, "passwordTarget": { "label": "Senha" },
+            "submitTarget": { "role": "button", "name": "Entrar" }, "successPath": "/produtos" },
+  "apiHeaders": { "Authorization": "Bearer {{env.API_TOKEN}}" },
+  "seed": [{ "path": "/api/products", "body": { "name": "Caneca {{runId}}", "price": 25 }, "saveAs": { "produtoId": "data.id" } }],
+  "steps": [
+    { "action": "goto", "path": "/produtos" },
+    { "action": "click", "target": { "role": "link", "name": "Caneca {{runId}}" } },
+    { "action": "select", "target": { "label": "Quantidade" }, "value": "2" },
+    { "action": "check", "target": { "label": "Aceito os termos" } },
+    { "action": "click", "target": { "role": "button", "name": "Comprar" },
+      "awaitResponse": { "method": "POST", "url": "/api/orders", "status": 201, "saveAs": { "pedidoId": "data.id" } } },
+    { "action": "expectUrl", "path": "/pedidos/{{pedidoId}}" },
+    { "action": "expectText", "text": "Total: R$ 50" },
+    { "action": "api", "path": "/api/orders/{{pedidoId}}", "expectJson": { "status": "CRIADO", "total": 50 } }
+  ],
+  "cleanup": [{ "path": "/api/products/{{produtoId}}" }, { "path": "/api/orders/{{pedidoId}}" }]
+}
+```
+
+**Execução:** a tool executa pelo MCP quando o Playwright está instalado, a URL é localhost (ou `allowRemote`) e as variáveis de ambiente usadas existem no processo do MCP (bloco `env` do `mcp.json`). Senão grava e diz o comando: `npx playwright test --grep @journey`. Com `playwright.journeys.config.ts` no projeto, a tool roda por ele. A execução de jornada pelo MCP tem limite de 15 minutos.
+
+**Espera de API sem perder o corpo:** `awaitResponse` intercepta a chamada só para repassá-la ao backend real (`route.fetch`) e guardar o corpo. Não é mock. Sem isso, o corpo some quando a página navega logo depois da resposta.
+
+**Validação:** o gerador foi testado com navegador real num sistema de exemplo (cliente e admin, e-mail, upload, download, diálogo, nova aba), em desktop e em celular emulado: 20 execuções seguidas sem instabilidade, e cada defeito injetado (total, redirecionamento, login, e-mail não enviado, aprovação, CSV, anexo, diálogo, layout, acessibilidade) falhou no passo certo.
+
+**Pirâmide:** arquivo com `@journey` ou `.journey.` conta como E2E em `suggest_test_pyramid_balance`.
 
 ### Design de casos
 
@@ -170,6 +250,7 @@ Com `projectRoot`, o servidor lê `package.json`, `requirements.txt`, `pyproject
 | `design_test_cases` | Design. Calcula boundary, equivalence, decision, state ou pairwise. Não grava arquivo. |
 | `generate_integration_test` | Real isolado. Banco e fila do sistema de verdade, descartáveis. Terceiro com custo fica mockado. |
 | `generate_api_test` | Contrato em teste ou staging. Não é carga em produção. |
+| `generate_journey_test` | Sistema real inteiro, sem mock. Executa no localhost; fora dele só com `allowRemote: true` (staging). Nunca produção. |
 | `generate_e2e_test` | Página real com a API mockada (padrão). `mockNetwork: false` é live sem mock. Component Testing quando não há rota de página e o pacote está no projeto. |
 | `generate_mobile_test` | Emulador ou device de teste. |
 | `suggest_performance_test_plan` | k6 em localhost se o binário existir. Host externo não executa. |
@@ -278,7 +359,7 @@ A gravação recusa manifesto e lock (`package.json`, `pom.xml` e equivalentes),
 | Categoria | Tools |
 | --- | --- |
 | Mapa do arquivo editado | 1 |
-| Geração por camada | 5 |
+| Geração por camada | 7 |
 | Design de casos | 1 |
 | Não funcionais | 4 |
 | Qualidade da suíte e métricas | 6 |
@@ -296,5 +377,5 @@ A gravação recusa manifesto e lock (`package.json`, `pom.xml` e equivalentes),
 | Contrato dirigido pelo consumidor | 1 |
 | Economia | 2 |
 | Ciclo fechado | 4 |
-| **Total** | **55** |
+| **Total** | **57** |
 

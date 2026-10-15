@@ -52,6 +52,7 @@ const EXTRA_FILES = new Set([
   "applitools.config.json",
   ".snyk",
   "checkly.config.ts",
+  "playwright.journeys.config.ts",
 ]);
 
 const TEST_FILE =

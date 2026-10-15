@@ -112,6 +112,7 @@ function classify(relative: string, fullPath: string): "unit" | "integration" | 
   const head = readHead(fullPath);
   if (head.includes("@network-mock")) return "networkMock";
   if (value.includes(".mocked.") || head.includes("@mocked")) return "mocked";
+  if (head.includes("@journey") || value.includes(".journey.")) return "e2e";
   if (/e2e|cypress|playwright|selenium|acceptance|features\/.+\\.feature/.test(value) || value.endsWith(".feature")) {
     return "e2e";
   }

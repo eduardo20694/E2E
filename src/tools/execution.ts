@@ -94,6 +94,7 @@ export async function runProjectTests(input: {
   testPath?: string;
   configFile?: string;
   updateSnapshots?: boolean;
+  timeoutMs?: number;
 }): Promise<ToolTextResult> {
   try {
     const report = await executeTests(input);
@@ -102,7 +103,7 @@ export async function runProjectTests(input: {
       doc([
         `# Execução — ${input.runner}`,
         report.timedOut
-          ? "Estourou o tempo limite de 2 minutos. O processo foi encerrado."
+          ? `Estourou o tempo limite de ${Math.round((input.timeoutMs && input.runner === "playwright" ? Math.min(input.timeoutMs, 900_000) : 120_000) / 60_000)} minutos. O processo foi encerrado.`
           : report.passed
             ? "Passou. Exit code 0."
             : `Falhou. Exit code ${report.exitCode ?? "nenhum"}.`,
@@ -130,6 +131,7 @@ export async function persistGenerated(input: {
   preface: string;
   configFile?: string;
   updateSnapshots?: boolean;
+  timeoutMs?: number;
 }): Promise<ToolTextResult> {
   const parts = [input.preface];
   let written: string | undefined;
@@ -167,6 +169,7 @@ export async function persistGenerated(input: {
         testPath: written,
         configFile: input.configFile,
         updateSnapshots: input.updateSnapshots,
+        timeoutMs: input.timeoutMs,
       });
       const body = ran.content[0]?.text ?? "";
       if (ran.isError && /não está instalado|ENOENT/.test(body)) {
@@ -271,7 +274,7 @@ export function registerExecutionTools(server: McpServer): void {
       configFile: z
         .string()
         .optional()
-        .describe("Só Playwright: playwright.config ou playwright-ct.config (ts, js ou mjs), dentro da raiz."),
+        .describe("Só Playwright: playwright.config, playwright-ct.config ou playwright.journeys.config (ts, js ou mjs), dentro da raiz."),
       updateSnapshots: z.boolean().optional().describe("Só Playwright: acrescenta --update-snapshots."),
     },
     (args) =>

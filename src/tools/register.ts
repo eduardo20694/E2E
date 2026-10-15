@@ -11,6 +11,7 @@ import { registerE2eTools } from "./e2e.js";
 import { registerExecutionTools } from "./execution.js";
 import { registerEconomicsTools } from "./quality-economics.js";
 import { registerI18nTools } from "./i18n-l10n.js";
+import { registerJourneyTools } from "./journey.js";
 import { registerIntegrationTools } from "./integration.js";
 import { registerManagementTools } from "./test-management-tooling.js";
 import { registerMetricsTools } from "./metrics.js";
@@ -33,6 +34,8 @@ export const TOOL_NAMES = [
   "generate_unit_test",
   "generate_integration_test",
   "generate_e2e_test",
+  "generate_journey_test",
+  "setup_e2e_environment",
   "generate_api_test",
   "generate_mobile_test",
   "design_test_cases",
@@ -93,6 +96,8 @@ export const CORE_TOOL_NAMES = [
   "generate_unit_test",
   "generate_integration_test",
   "generate_e2e_test",
+  "generate_journey_test",
+  "setup_e2e_environment",
   "generate_api_test",
   "setup_consumer_driven_contracts",
   "design_test_cases",
@@ -140,6 +145,7 @@ export function registerAllTools(server: McpServer): void {
   registerUnitTools(server);
   registerIntegrationTools(server);
   registerE2eTools(server);
+  registerJourneyTools(server);
   registerApiTools(server);
   registerMobileTools(server);
   registerDesignTools(server);

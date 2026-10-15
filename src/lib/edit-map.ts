@@ -99,6 +99,7 @@ export const LAYER_GUIDE: LayerGuide[] = [
       { tool: "setup_chaos_experiment", reason: "não é deploy." },
       { tool: "generate_mobile_test", reason: "não é app nativo." },
     ],
+    note: "Se a tela faz parte de um fluxo de negócio (login, cadastro, compra), cubra a jornada inteira com `generate_journey_test`: várias páginas, sistema de pé, sem mock, com seed, verificação no backend e limpeza.",
   },
   {
     id: "api",
@@ -258,7 +259,7 @@ export function mapTestsForEdit(input: EditMapInput): ToolTextResult {
 
   const promptNote =
     layer === "test" && !input.hasLogOrJunit && !input.hasReport ? guide?.note : undefined;
-  const deployNote = layer === "deploy" ? guide?.note : undefined;
+  const deployNote = layer === "deploy" || layer === "ui" ? guide?.note : undefined;
   const orderText = lines.length
     ? lines.join("\n")
     : outside.length
